@@ -401,14 +401,20 @@ function directedTurnAngleDeg(fromHeadingDeg, toHeadingDeg, holdSide) {
   throw new Error("Hold side must be L or R");
 }
 
-function computeTurnRateDegPerSec(tasKt) {
+function computeTurnRateLimit(tasKt) {
   if (!Number.isFinite(tasKt) || tasKt <= 0) {
     throw new Error("TAS must be > 0 kt");
   }
   const bankLimitedDegPerSec = toDegrees((G0 * Math.tan(toRadians(HOLD_MAX_BANK_DEG))) / (tasKt * KT_TO_MPS));
+  const bankForRate1Deg = toDegrees(
+    Math.atan((toRadians(STANDARD_RATE_TURN_DEG_PER_SEC) * tasKt * KT_TO_MPS) / G0),
+  );
+  const maxRateDegPerSec = Math.min(STANDARD_RATE_TURN_DEG_PER_SEC, bankLimitedDegPerSec);
   return {
     bankLimitedDegPerSec,
-    usedDegPerSec: Math.min(STANDARD_RATE_TURN_DEG_PER_SEC, bankLimitedDegPerSec),
+    bankForRate1Deg,
+    maxRateDegPerSec,
+    limitModel: bankLimitedDegPerSec < STANDARD_RATE_TURN_DEG_PER_SEC ? "25° bank limited" : "Rate-1 limited",
   };
 }
 
@@ -460,15 +466,22 @@ function calculateHoldTiming({
   const inbound = solveHeadingForTrack(inboundTrack, speed.tasKt, windFromDeg, windSpeedKt);
   const outbound = solveHeadingForTrack(outboundTrack, speed.tasKt, windFromDeg, windSpeedKt);
 
-  const turnRate = computeTurnRateDegPerSec(speed.tasKt);
-  if (turnRate.usedDegPerSec <= 0) {
+  const turnLimit = computeTurnRateLimit(speed.tasKt);
+  if (turnLimit.maxRateDegPerSec <= 0) {
     throw new Error("Turn rate is invalid");
   }
 
   const turn1Deg = directedTurnAngleDeg(inbound.headingDeg, outbound.headingDeg, holdSide);
   const turn2Deg = directedTurnAngleDeg(outbound.headingDeg, inbound.headingDeg, holdSide);
-  const turn1Min = (turn1Deg / turnRate.usedDegPerSec) / 60;
-  const turn2Min = (turn2Deg / turnRate.usedDegPerSec) / 60;
+  // Keep racetrack timing symmetric by using one common turn duration.
+  // Each turn then uses its own bank angle/rate (capped by rate-1 or 25 deg, whichever lower).
+  const commonTurnMin = (Math.max(turn1Deg, turn2Deg) / turnLimit.maxRateDegPerSec) / 60;
+  const turn1RateDegPerSec = turn1Deg / (commonTurnMin * 60);
+  const turn2RateDegPerSec = turn2Deg / (commonTurnMin * 60);
+  const turn1BankDeg = toDegrees(Math.atan((toRadians(turn1RateDegPerSec) * speed.tasKt * KT_TO_MPS) / G0));
+  const turn2BankDeg = toDegrees(Math.atan((toRadians(turn2RateDegPerSec) * speed.tasKt * KT_TO_MPS) / G0));
+  const turn1Min = commonTurnMin;
+  const turn2Min = commonTurnMin;
   const totalTurnMin = turn1Min + turn2Min;
   const gsRatioInToOut = inbound.gsKt / outbound.gsKt;
 
@@ -508,10 +521,13 @@ function calculateHoldTiming({
     outboundGroundSpeedKt: outbound.gsKt,
     inboundWcaDeg: inbound.wcaDeg,
     outboundWcaDeg: outbound.wcaDeg,
-    turnRateDegPerSec: turnRate.usedDegPerSec,
-    bankLimitedTurnRateDegPerSec: turnRate.bankLimitedDegPerSec,
-    turnModel:
-      turnRate.bankLimitedDegPerSec < STANDARD_RATE_TURN_DEG_PER_SEC ? "25° bank limited" : "Rate-1 limited",
+    turn1RateDegPerSec,
+    turn2RateDegPerSec,
+    maxTurnRateDegPerSec: turnLimit.maxRateDegPerSec,
+    bankLimitedTurnRateDegPerSec: turnLimit.bankLimitedDegPerSec,
+    turn1BankDeg,
+    turn2BankDeg,
+    turnModel: turnLimit.limitModel,
     turn1Deg,
     turn2Deg,
     turn1Min,
@@ -1230,11 +1246,14 @@ function bindHolding() {
           `${format(timing.inboundGroundSpeedKt, 1)} / ${format(timing.outboundGroundSpeedKt, 1)} kt`,
         ],
         ["Inbound / Outbound Leg Distance", `${format(timing.inboundLegNm, 2)} / ${format(timing.outboundLegNm, 2)} NM`],
-        ["Turn 1 / Turn 2", `${format(timing.turn1Deg, 1)}° (${format(timing.turn1Min, 2)} min) / ${format(timing.turn2Deg, 1)}° (${format(timing.turn2Min, 2)} min)`],
+        [
+          "Turn 1 / Turn 2",
+          `${format(timing.turn1Deg, 1)}° (${format(timing.turn1Min, 2)} min @ ${format(timing.turn1BankDeg, 1)}° bank) / ${format(timing.turn2Deg, 1)}° (${format(timing.turn2Min, 2)} min @ ${format(timing.turn2BankDeg, 1)}° bank)`,
+        ],
         ["Turn Total", `${format(timing.totalTurnMin, 2)} min`],
         [
           "Turn Rate Used",
-          `${format(timing.turnRateDegPerSec, 2)} °/s (${timing.turnModel}; bank-25 capability ${format(timing.bankLimitedTurnRateDegPerSec, 2)} °/s)`,
+          `${format(timing.turn1RateDegPerSec, 2)} / ${format(timing.turn2RateDegPerSec, 2)} °/s (${timing.turnModel}; max ${format(timing.maxTurnRateDegPerSec, 2)} °/s, bank-25 capability ${format(timing.bankLimitedTurnRateDegPerSec, 2)} °/s)`,
         ],
       ]);
     } catch (error) {
