@@ -1392,7 +1392,7 @@ function bindHolding() {
       const endurance = (fuelAvailable / hold.fuelHr) * 60;
 
       renderRows(out, [
-        ["Hold Command IAS (table)", `${format(hold.kias, 1)} kt`],
+        ["Hold Command IAS (table)", `${format(hold.kias, 0)} kt`],
         ["Hold FF_ENG / Fuel Hr", `${format(hold.ffEng, 0)} / ${format(hold.fuelHr, 0)} kg/h`],
         ["Hold less 5%", `${format(hold.lessFivePct, 0)} kg/h`],
         ["Hold Endurance", formatMinutes(endurance)],
@@ -1407,12 +1407,12 @@ function bindHolding() {
           "Total Hold Time (fix crossing to fix crossing)",
           `${format(timing.totalHoldMin, 2)} min (${formatMinutes(timing.totalHoldMin)})`,
         ],
-        ["Timing IAS / TAS / Mach", `${format(timing.iasKt, 0)} / ${format(timing.tasKt, 1)} kt / ${format(timing.mach, 3)}`],
+        ["Timing IAS / TAS / Mach", `${format(timing.iasKt, 0)} / ${format(timing.tasKt, 0)} kt / ${format(timing.mach, 3)}`],
         ["Inbound / Outbound Track", `${format(timing.inboundTrackDeg, 0)}° / ${format(timing.outboundTrackDeg, 0)}°`],
-        ["Inbound / Outbound Heading", `${format(timing.inboundHeadingDeg, 1)}° / ${format(timing.outboundHeadingDeg, 1)}°`],
+        ["Inbound / Outbound Heading", `${format(timing.inboundHeadingDeg, 0)}° / ${format(timing.outboundHeadingDeg, 0)}°`],
         [
           "Inbound / Outbound GS",
-          `${format(timing.inboundGroundSpeedKt, 1)} / ${format(timing.outboundGroundSpeedKt, 1)} kt`,
+          `${format(timing.inboundGroundSpeedKt, 0)} / ${format(timing.outboundGroundSpeedKt, 0)} kt`,
         ],
         ["Leg Distance", `${format((timing.inboundLegNm + timing.outboundLegNm) / 2, 2)} NM`],
         [
@@ -1420,7 +1420,7 @@ function bindHolding() {
           `${format(timing.turn1Deg, 1)}° (${format(timing.turn1Min, 2)} min @ ${format(timing.turn1BankDeg, 1)}° bank) / ${format(timing.turn2Deg, 1)}° (${format(timing.turn2Min, 2)} min @ ${format(timing.turn2BankDeg, 1)}° bank)`,
         ],
         ["Turn Total", `${format(timing.totalTurnMin, 2)} min`],
-        ["Turn Radius Reference GS (TAS + |wind|)", `${format(timing.referenceTurnGsKt, 1)} kt`],
+        ["Turn Radius Reference GS (TAS + |wind|)", `${format(timing.referenceTurnGsKt, 0)} kt`],
         ["Turn Radius (common)", `${format(timing.turnRadiusNm, 2)} NM`],
         [
           "Turn Rate Used",
@@ -1590,9 +1590,9 @@ function bindConversion() {
       }
 
       renderRows(out, [
-        ["IAS", `${format(result.iasKt, 2)} kt`],
+        ["IAS", `${format(result.iasKt, 0)} kt`],
         ["Mach", format(result.mach, 3)],
-        ["TAS", `${format(result.tasKt, 2)} kt`],
+        ["TAS", `${format(result.tasKt, 0)} kt`],
         ["Pressure Altitude Used", `${format(pressureAltitudeFt, 0)} ft`],
         ["Geopotential Altitude", `${format(atmosphere.geopotentialM * M_TO_FT, 0)} ft`],
         ["ISA Temp", `${format(atmosphere.isaTempK - 273.15, 1)} °C`],

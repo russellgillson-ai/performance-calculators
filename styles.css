@@ -72,6 +72,12 @@ body {
   color: #083f67;
 }
 
+.module-note {
+  margin: -0.4rem 0 0.7rem;
+  font-size: 0.88rem;
+  color: #4a657c;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
