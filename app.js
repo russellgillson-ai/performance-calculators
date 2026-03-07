@@ -20,7 +20,6 @@ const ISA_LAYER_LAPSE_RATES = [-0.0065, 0, 0.001, 0.0028, 0];
 const ISA_BASES = buildIsaBases();
 const DEG_PER_RAD = 180 / Math.PI;
 const RAD_PER_DEG = Math.PI / 180;
-const STANDARD_RATE_TURN_DEG_PER_SEC = 3;
 const HOLD_MAX_BANK_DEG = 25;
 const FIXED_ALLOWANCE_KG = 200;
 const MIN_CONTINGENCY_KG = 350;
@@ -393,29 +392,55 @@ function solveHeadingForTrack(trackDeg, tasKt, windFromDeg, windSpeedKt) {
   };
 }
 
-function directedTurnAngleDeg(fromHeadingDeg, toHeadingDeg, holdSide) {
-  const from = normalize360(fromHeadingDeg);
-  const to = normalize360(toHeadingDeg);
-  if (holdSide === "R") return normalize360(to - from);
-  if (holdSide === "L") return normalize360(from - to);
-  throw new Error("Hold side must be L or R");
-}
-
-function computeTurnRateLimit(tasKt) {
+function computeReferenceTurnRadiusNm(tasKt, windSpeedKt) {
   if (!Number.isFinite(tasKt) || tasKt <= 0) {
     throw new Error("TAS must be > 0 kt");
   }
-  const bankLimitedDegPerSec = toDegrees((G0 * Math.tan(toRadians(HOLD_MAX_BANK_DEG))) / (tasKt * KT_TO_MPS));
-  const bankForRate1Deg = toDegrees(
-    Math.atan((toRadians(STANDARD_RATE_TURN_DEG_PER_SEC) * tasKt * KT_TO_MPS) / G0),
-  );
-  const maxRateDegPerSec = Math.min(STANDARD_RATE_TURN_DEG_PER_SEC, bankLimitedDegPerSec);
+  if (!Number.isFinite(windSpeedKt) || windSpeedKt < 0) {
+    throw new Error("Wind speed must be >= 0 kt");
+  }
+  const referenceGsKt = tasKt + Math.abs(windSpeedKt);
+  if (referenceGsKt <= 0) {
+    throw new Error("Reference ground speed is invalid");
+  }
+  const radiusM = (referenceGsKt * KT_TO_MPS) ** 2 / (G0 * Math.tan(toRadians(HOLD_MAX_BANK_DEG)));
+  const radiusNm = radiusM / 1852;
+  const referenceRateDegPerSec = toDegrees((referenceGsKt / 3600) / radiusNm);
   return {
-    bankLimitedDegPerSec,
-    bankForRate1Deg,
-    maxRateDegPerSec,
-    limitModel: bankLimitedDegPerSec < STANDARD_RATE_TURN_DEG_PER_SEC ? "25° bank limited" : "Rate-1 limited",
+    referenceGsKt,
+    radiusNm,
+    referenceRateDegPerSec,
   };
+}
+
+function averageTurnGroundSpeed({
+  startTrackDeg,
+  holdSide,
+  tasKt,
+  windFromDeg,
+  windSpeedKt,
+  label,
+  samples = 72,
+}) {
+  if (holdSide !== "R" && holdSide !== "L") {
+    throw new Error("Hold side must be L or R");
+  }
+  const direction = holdSide === "R" ? 1 : -1;
+  let gsSum = 0;
+
+  for (let i = 0; i < samples; i += 1) {
+    const t = (i + 0.5) / samples;
+    const trackDeg = normalize360(startTrackDeg + direction * 180 * t);
+    let state;
+    try {
+      state = solveHeadingForTrack(trackDeg, tasKt, windFromDeg, windSpeedKt);
+    } catch (error) {
+      throw new Error(`Unable to compute ${label} ground speed through turn: ${error.message}`);
+    }
+    gsSum += state.gsKt;
+  }
+
+  return gsSum / samples;
 }
 
 function calculateHoldTiming({
@@ -426,12 +451,12 @@ function calculateHoldTiming({
   inboundCourseDeg,
   windFromDeg,
   windSpeedKt,
-  flightLevel,
+  pressureAltitudeFt,
   iasKt,
   isaDeviationC,
 }) {
-  if (!Number.isFinite(flightLevel) || flightLevel <= 0) {
-    throw new Error("Timing Flight Level must be a positive number");
+  if (!Number.isFinite(pressureAltitudeFt) || pressureAltitudeFt <= 0) {
+    throw new Error("Timing altitude must be a positive value in feet");
   }
   if (!Number.isFinite(iasKt) || iasKt <= 0) {
     throw new Error("Timing IAS must be > 0 kt");
@@ -450,7 +475,7 @@ function calculateHoldTiming({
   }
 
   const atmosphere = atmosphereFromPressureAltitude({
-    pressureAltitudeFt: flightLevel * 100,
+    pressureAltitudeFt,
     tempMode: "isa-dev",
     isaDeviationC,
     oatC: 0,
@@ -466,22 +491,37 @@ function calculateHoldTiming({
   const inbound = solveHeadingForTrack(inboundTrack, speed.tasKt, windFromDeg, windSpeedKt);
   const outbound = solveHeadingForTrack(outboundTrack, speed.tasKt, windFromDeg, windSpeedKt);
 
-  const turnLimit = computeTurnRateLimit(speed.tasKt);
-  if (turnLimit.maxRateDegPerSec <= 0) {
-    throw new Error("Turn rate is invalid");
+  const turnRef = computeReferenceTurnRadiusNm(speed.tasKt, windSpeedKt);
+  if (!Number.isFinite(turnRef.radiusNm) || turnRef.radiusNm <= 0) {
+    throw new Error("Turn radius is invalid");
   }
 
-  const turn1Deg = directedTurnAngleDeg(inbound.headingDeg, outbound.headingDeg, holdSide);
-  const turn2Deg = directedTurnAngleDeg(outbound.headingDeg, inbound.headingDeg, holdSide);
-  // Keep racetrack timing symmetric by using one common turn duration.
-  // Each turn then uses its own bank angle/rate (capped by rate-1 or 25 deg, whichever lower).
-  const commonTurnMin = (Math.max(turn1Deg, turn2Deg) / turnLimit.maxRateDegPerSec) / 60;
-  const turn1RateDegPerSec = turn1Deg / (commonTurnMin * 60);
-  const turn2RateDegPerSec = turn2Deg / (commonTurnMin * 60);
+  const turn1Deg = 180;
+  const turn2Deg = 180;
+  const turn1AvgGsKt = averageTurnGroundSpeed({
+    startTrackDeg: inboundTrack,
+    holdSide,
+    tasKt: speed.tasKt,
+    windFromDeg,
+    windSpeedKt,
+    label: "turn 1",
+  });
+  const turn2AvgGsKt = averageTurnGroundSpeed({
+    startTrackDeg: outboundTrack,
+    holdSide,
+    tasKt: speed.tasKt,
+    windFromDeg,
+    windSpeedKt,
+    label: "turn 2",
+  });
+  const turnRadiusNm = turnRef.radiusNm;
+
+  const turn1RateDegPerSec = toDegrees((turn1AvgGsKt / 3600) / turnRadiusNm);
+  const turn2RateDegPerSec = toDegrees((turn2AvgGsKt / 3600) / turnRadiusNm);
   const turn1BankDeg = toDegrees(Math.atan((toRadians(turn1RateDegPerSec) * speed.tasKt * KT_TO_MPS) / G0));
   const turn2BankDeg = toDegrees(Math.atan((toRadians(turn2RateDegPerSec) * speed.tasKt * KT_TO_MPS) / G0));
-  const turn1Min = commonTurnMin;
-  const turn2Min = commonTurnMin;
+  const turn1Min = (turn1Deg / turn1RateDegPerSec) / 60;
+  const turn2Min = (turn2Deg / turn2RateDegPerSec) / 60;
   const totalTurnMin = turn1Min + turn2Min;
   const gsRatioInToOut = inbound.gsKt / outbound.gsKt;
 
@@ -523,11 +563,14 @@ function calculateHoldTiming({
     outboundWcaDeg: outbound.wcaDeg,
     turn1RateDegPerSec,
     turn2RateDegPerSec,
-    maxTurnRateDegPerSec: turnLimit.maxRateDegPerSec,
-    bankLimitedTurnRateDegPerSec: turnLimit.bankLimitedDegPerSec,
+    referenceTurnRateDegPerSec: turnRef.referenceRateDegPerSec,
+    referenceTurnGsKt: turnRef.referenceGsKt,
+    turnRadiusNm,
+    turn1AvgGsKt,
+    turn2AvgGsKt,
     turn1BankDeg,
     turn2BankDeg,
-    turnModel: turnLimit.limitModel,
+    turnModel: "25° bank radius reference",
     turn1Deg,
     turn2Deg,
     turn1Min,
@@ -1201,11 +1244,12 @@ function bindHolding() {
       const inboundCourseDeg = parseNum(document.querySelector("#hold-inbound-course").value);
       const windFromDeg = parseNum(document.querySelector("#hold-wind-dir").value);
       const windSpeedKt = parseNum(document.querySelector("#hold-wind-speed").value);
-      const timingFl = parseNum(document.querySelector("#hold-timing-fl").value);
-      const timingIasKt = parseNum(document.querySelector("#hold-timing-ias").value);
+      const timingIasRaw = String(document.querySelector("#hold-timing-ias").value || "").trim();
       const timingIsaDevC = parseNum(document.querySelector("#hold-timing-isa-dev").value);
 
       const hold = holdingAt(weight, altitude, 0, perfAdjust);
+      const useManualTimingIas = timingIasRaw !== "";
+      const timingIasKt = useManualTimingIas ? parseNum(timingIasRaw) : hold.kias;
       const timing = calculateHoldTiming({
         mode: timingMode,
         totalHoldMin,
@@ -1214,7 +1258,7 @@ function bindHolding() {
         inboundCourseDeg,
         windFromDeg,
         windSpeedKt,
-        flightLevel: timingFl,
+        pressureAltitudeFt: altitude,
         iasKt: timingIasKt,
         isaDeviationC: timingIsaDevC,
       });
@@ -1222,7 +1266,7 @@ function bindHolding() {
       const endurance = (fuelAvailable / hold.fuelHr) * 60;
 
       renderRows(out, [
-        ["Hold KIAS / TAS", `${format(hold.kias, 1)} / ${format(hold.tas, 1)} kt`],
+        ["Hold Command IAS (table)", `${format(hold.kias, 1)} kt`],
         ["Hold FF_ENG / Fuel Hr", `${format(hold.ffEng, 0)} / ${format(hold.fuelHr, 0)} kg/h`],
         ["Hold less 5%", `${format(hold.lessFivePct, 0)} kg/h`],
         ["Hold Endurance", formatMinutes(endurance)],
@@ -1240,20 +1284,21 @@ function bindHolding() {
         ["Timing IAS / TAS / Mach", `${format(timing.iasKt, 0)} / ${format(timing.tasKt, 1)} kt / ${format(timing.mach, 3)}`],
         ["Inbound / Outbound Track", `${format(timing.inboundTrackDeg, 0)}° / ${format(timing.outboundTrackDeg, 0)}°`],
         ["Inbound / Outbound Heading", `${format(timing.inboundHeadingDeg, 1)}° / ${format(timing.outboundHeadingDeg, 1)}°`],
-        ["Inbound/Outbound GS Ratio", `${format(timing.gsRatioInToOut, 3)}`],
         [
           "Inbound / Outbound GS",
           `${format(timing.inboundGroundSpeedKt, 1)} / ${format(timing.outboundGroundSpeedKt, 1)} kt`,
         ],
-        ["Inbound / Outbound Leg Distance", `${format(timing.inboundLegNm, 2)} / ${format(timing.outboundLegNm, 2)} NM`],
+        ["Leg Distance", `${format((timing.inboundLegNm + timing.outboundLegNm) / 2, 2)} NM`],
         [
           "Turn 1 / Turn 2",
           `${format(timing.turn1Deg, 1)}° (${format(timing.turn1Min, 2)} min @ ${format(timing.turn1BankDeg, 1)}° bank) / ${format(timing.turn2Deg, 1)}° (${format(timing.turn2Min, 2)} min @ ${format(timing.turn2BankDeg, 1)}° bank)`,
         ],
         ["Turn Total", `${format(timing.totalTurnMin, 2)} min`],
+        ["Turn Radius Reference GS (TAS + |wind|)", `${format(timing.referenceTurnGsKt, 1)} kt`],
+        ["Turn Radius (common)", `${format(timing.turnRadiusNm, 2)} NM`],
         [
           "Turn Rate Used",
-          `${format(timing.turn1RateDegPerSec, 2)} / ${format(timing.turn2RateDegPerSec, 2)} °/s (${timing.turnModel}; max ${format(timing.maxTurnRateDegPerSec, 2)} °/s, bank-25 capability ${format(timing.bankLimitedTurnRateDegPerSec, 2)} °/s)`,
+          `${format(timing.turn1RateDegPerSec, 2)} / ${format(timing.turn2RateDegPerSec, 2)} °/s (${timing.turnModel}; reference ${format(timing.referenceTurnRateDegPerSec, 2)} °/s)`,
         ],
       ]);
     } catch (error) {
