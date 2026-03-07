@@ -291,38 +291,75 @@ function diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, additional
     throw new Error("Global flight plan performance adjustment is invalid");
   }
 
-  const anm = Math.abs(wind) < 1e-9
-    ? clampToAxis(DIVERSION_LRC_TABLE.groundToAir.gnmAxis, gnm)
-    : bilinearClamped(
-        DIVERSION_LRC_TABLE.groundToAir.gnmAxis,
-        DIVERSION_LRC_TABLE.groundToAir.windAxis,
-        DIVERSION_LRC_TABLE.groundToAir.values,
-        gnm,
-        wind,
-      );
+  const hasBands = DIVERSION_LRC_TABLE.low && DIVERSION_LRC_TABLE.high;
+  const evaluateBand = (tableSet) => {
+    const anm = Math.abs(wind) < 1e-9
+      ? clampToAxis(tableSet.groundToAir.gnmAxis, gnm)
+      : bilinearClamped(
+          tableSet.groundToAir.gnmAxis,
+          tableSet.groundToAir.windAxis,
+          tableSet.groundToAir.values,
+          gnm,
+          wind,
+        );
 
-  const referenceFuel1000Kg = bilinearClamped(
-    DIVERSION_LRC_TABLE.fuelTime.anmAxis,
-    DIVERSION_LRC_TABLE.fuelTime.altitudeAxisFt,
-    DIVERSION_LRC_TABLE.fuelTime.fuel1000KgValues,
-    anm,
-    altitudeFt,
-  );
-  const timeMinutes = bilinearClamped(
-    DIVERSION_LRC_TABLE.fuelTime.anmAxis,
-    DIVERSION_LRC_TABLE.fuelTime.altitudeAxisFt,
-    DIVERSION_LRC_TABLE.fuelTime.timeMinutesValues,
-    anm,
-    altitudeFt,
-  );
+    const referenceFuel1000Kg = bilinearClamped(
+      tableSet.fuelTime.anmAxis,
+      tableSet.fuelTime.altitudeAxisFt,
+      tableSet.fuelTime.fuel1000KgValues,
+      anm,
+      altitudeFt,
+    );
+    const timeMinutes = bilinearClamped(
+      tableSet.fuelTime.anmAxis,
+      tableSet.fuelTime.altitudeAxisFt,
+      tableSet.fuelTime.timeMinutesValues,
+      anm,
+      altitudeFt,
+    );
+    const adjustment1000Kg = bilinearClamped(
+      tableSet.fuelAdjustment.referenceFuelAxis1000Kg,
+      tableSet.fuelAdjustment.weightAxisT,
+      tableSet.fuelAdjustment.adjustment1000KgValues,
+      referenceFuel1000Kg,
+      weightT,
+    );
 
-  const adjustment1000Kg = bilinearClamped(
-    DIVERSION_LRC_TABLE.fuelAdjustment.referenceFuelAxis1000Kg,
-    DIVERSION_LRC_TABLE.fuelAdjustment.weightAxisT,
-    DIVERSION_LRC_TABLE.fuelAdjustment.adjustment1000KgValues,
-    referenceFuel1000Kg,
-    weightT,
-  );
+    return {
+      anm,
+      referenceFuel1000Kg,
+      timeMinutes,
+      adjustment1000Kg,
+    };
+  };
+
+  let anm;
+  let referenceFuel1000Kg;
+  let timeMinutes;
+  let adjustment1000Kg;
+
+  if (!hasBands) {
+    ({ anm, referenceFuel1000Kg, timeMinutes, adjustment1000Kg } = evaluateBand(DIVERSION_LRC_TABLE));
+  } else {
+    const lowBand = DIVERSION_LRC_TABLE.low;
+    const highBand = DIVERSION_LRC_TABLE.high;
+    const lowTopFt = lowBand.fuelTime.altitudeAxisFt[lowBand.fuelTime.altitudeAxisFt.length - 1];
+    const highBottomFt = highBand.fuelTime.altitudeAxisFt[0];
+
+    if (altitudeFt <= lowTopFt) {
+      ({ anm, referenceFuel1000Kg, timeMinutes, adjustment1000Kg } = evaluateBand(lowBand));
+    } else if (altitudeFt >= highBottomFt) {
+      ({ anm, referenceFuel1000Kg, timeMinutes, adjustment1000Kg } = evaluateBand(highBand));
+    } else {
+      const lowEval = evaluateBand(lowBand);
+      const highEval = evaluateBand(highBand);
+      const alpha = (altitudeFt - lowTopFt) / (highBottomFt - lowTopFt);
+      anm = lowEval.anm + (highEval.anm - lowEval.anm) * alpha;
+      referenceFuel1000Kg = lowEval.referenceFuel1000Kg + (highEval.referenceFuel1000Kg - lowEval.referenceFuel1000Kg) * alpha;
+      timeMinutes = lowEval.timeMinutes + (highEval.timeMinutes - lowEval.timeMinutes) * alpha;
+      adjustment1000Kg = lowEval.adjustment1000Kg + (highEval.adjustment1000Kg - lowEval.adjustment1000Kg) * alpha;
+    }
+  }
 
   const adjustedFuelBeforePerf1000Kg = referenceFuel1000Kg + adjustment1000Kg;
   const adjustedFuel1000Kg = adjustedFuelBeforePerf1000Kg * (1 + perfAdjust);
@@ -1393,7 +1430,7 @@ function bindHolding() {
 
       renderRows(out, [
         ["Hold Command IAS (table)", `${format(hold.kias, 0)} kt`],
-        ["Hold FF_ENG / Fuel Hr", `${format(hold.ffEng, 0)} / ${format(hold.fuelHr, 0)} kg/h`],
+        ["Hold Fuel Flow", `${format(hold.fuelHr, 0)} kg/h`],
         ["Hold less 5%", `${format(hold.lessFivePct, 0)} kg/h`],
         ["Hold Endurance", formatMinutes(endurance)],
         ["__spacer__", ""],
@@ -1420,12 +1457,7 @@ function bindHolding() {
           `${format(timing.turn1Deg, 1)}° (${format(timing.turn1Min, 2)} min @ ${format(timing.turn1BankDeg, 1)}° bank) / ${format(timing.turn2Deg, 1)}° (${format(timing.turn2Min, 2)} min @ ${format(timing.turn2BankDeg, 1)}° bank)`,
         ],
         ["Turn Total", `${format(timing.totalTurnMin, 2)} min`],
-        ["Turn Radius Reference GS (TAS + |wind|)", `${format(timing.referenceTurnGsKt, 0)} kt`],
         ["Turn Radius (common)", `${format(timing.turnRadiusNm, 2)} NM`],
-        [
-          "Turn Rate Used",
-          `${format(timing.turn1RateDegPerSec, 2)} / ${format(timing.turn2RateDegPerSec, 2)} °/s (${timing.turnModel}; reference ${format(timing.referenceTurnRateDegPerSec, 2)} °/s)`,
-        ],
       ]);
     } catch (error) {
       renderError(out, error.message);
