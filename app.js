@@ -1662,7 +1662,36 @@ function bindGlobalSettings() {
 function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   if (!window.isSecureContext) return;
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+
+  navigator.serviceWorker
+    .register("./sw.js")
+    .then((registration) => {
+      registration.update().catch(() => {});
+
+      const activateWaitingWorker = () => {
+        if (registration.waiting) {
+          registration.waiting.postMessage({ type: "SKIP_WAITING" });
+        }
+      };
+
+      activateWaitingWorker();
+      registration.addEventListener("updatefound", () => {
+        const installing = registration.installing;
+        if (!installing) return;
+        installing.addEventListener("statechange", () => {
+          if (installing.state === "installed" && navigator.serviceWorker.controller) {
+            activateWaitingWorker();
+          }
+        });
+      });
+    })
+    .catch(() => {});
 }
 
 bindShortTrip();

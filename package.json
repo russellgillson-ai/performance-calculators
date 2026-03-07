@@ -1,0 +1,11 @@
+{
+  "name": "performance-calculators",
+  "private": true,
+  "version": "1.0.0",
+  "description": "B787 performance calculators static web app checks",
+  "scripts": {
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "check:data": "node scripts/check-data.mjs",
+    "check": "npm run check:syntax && npm run check:data"
+  }
+}

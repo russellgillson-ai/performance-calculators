@@ -1,5 +1,5 @@
-const CACHE_NAME = "performance-calculators-v2";
-const CORE_ASSETS = [
+const CACHE_NAME = "performance-calculators-v3";
+const APP_SHELL_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
@@ -13,9 +13,15 @@ const CORE_ASSETS = [
   "./icon-512.png",
 ];
 
+self.addEventListener("message", (event) => {
+  if (event?.data?.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)).then(() => self.skipWaiting()),
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL_ASSETS)).then(() => self.skipWaiting()),
   );
 });
 
@@ -40,27 +46,49 @@ self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
 
-  if (event.request.mode === "navigate") {
-    event.respondWith(
-      fetch(event.request)
-        .then((networkResponse) => {
-          const responseCopy = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put("./index.html", responseCopy));
-          return networkResponse;
-        })
-        .catch(() => caches.match("./index.html")),
-    );
+  const appShellPathSet = new Set(APP_SHELL_ASSETS.map((asset) => new URL(asset, self.location.href).pathname));
+  const isNavigation = event.request.mode === "navigate";
+  const isAppShellAsset = appShellPathSet.has(requestUrl.pathname);
+
+  const networkFirst = async (cacheKey) => {
+    const cache = await caches.open(CACHE_NAME);
+    try {
+      const networkResponse = await fetch(event.request, { cache: "no-store" });
+      if (networkResponse && networkResponse.ok) {
+        await cache.put(cacheKey, networkResponse.clone());
+      }
+      return networkResponse;
+    } catch (error) {
+      const cached = await cache.match(cacheKey, { ignoreSearch: true });
+      if (cached) return cached;
+      throw error;
+    }
+  };
+
+  if (isNavigation || isAppShellAsset) {
+    event.respondWith(networkFirst(isNavigation ? "./index.html" : event.request));
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) return cachedResponse;
-      return fetch(event.request).then((networkResponse) => {
-        const responseCopy = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseCopy));
-        return networkResponse;
-      });
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const cachedResponse = await cache.match(event.request, { ignoreSearch: true });
+      const networkPromise = fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.ok) {
+            cache.put(event.request, networkResponse.clone());
+          }
+          return networkResponse;
+        })
+        .catch(() => null);
+
+      if (cachedResponse) {
+        networkPromise.catch(() => {});
+        return cachedResponse;
+      }
+      const networkResponse = await networkPromise;
+      if (networkResponse) return networkResponse;
+      return new Response("Offline", { status: 503, statusText: "Offline" });
     }),
   );
 });
