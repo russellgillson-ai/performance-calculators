@@ -92,6 +92,10 @@ label {
   color: #1d3f59;
 }
 
+.global-setting-field {
+  max-width: 420px;
+}
+
 input,
 select,
 button {

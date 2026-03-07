@@ -22,7 +22,7 @@
       <section class="panel" aria-labelledby="global-settings-heading">
         <h2 id="global-settings-heading">Global Settings</h2>
         <div class="grid">
-          <label>
+          <label class="global-setting-field">
             Flight Plan Performance Adjustment (applies to all fuel calculations)
             <input type="number" step="0.1" id="global-perf-adjust" value="0" />
           </label>
@@ -91,7 +91,7 @@
             <input type="number" step="1" id="div-wind" value="0" />
           </label>
           <label>
-            Diversion Altitude (ft)
+            Diversion Altitude (ft or FL, e.g. 20000 or 200)
             <input type="number" step="100" id="div-alt" value="20000" />
           </label>
           <label>
@@ -115,7 +115,7 @@
             <input type="number" step="0.1" min="0" id="hold-weight" value="160" />
           </label>
           <label>
-            Altitude (ft)
+            Altitude (ft or FL, e.g. 30000 or 300)
             <input type="number" step="100" min="0" id="hold-alt" value="30000" />
           </label>
           <label>
@@ -181,7 +181,7 @@
             <input type="number" step="0.1" id="lt-weight" value="200" />
           </label>
           <label>
-            Current Flight Level (e.g. 370)
+            Current Flight Level (FL, e.g. 370 or 37000 ft)
             <input type="number" step="1" id="lt-fl" value="370" />
           </label>
           <label>
@@ -205,7 +205,7 @@
             <input type="number" step="1" id="lt-change-after-min" value="0" />
           </label>
           <label>
-            New Flight Level (e.g. 390)
+            New Flight Level (FL, e.g. 390 or 39000 ft)
             <input type="number" step="1" id="lt-new-fl" value="390" />
           </label>
           <button type="submit">Calculate</button>
@@ -237,7 +237,7 @@
             <input type="number" step="0.1" id="conv-tas" value="485" />
           </label>
           <label>
-            Flight Level
+            Flight Level (e.g. 370 or 37000 ft)
             <input type="number" step="1" id="conv-fl" value="370" />
           </label>
           <label>

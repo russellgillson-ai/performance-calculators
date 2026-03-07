@@ -26,10 +26,49 @@ const FIXED_ALLOWANCE_KG = 200;
 const MIN_CONTINGENCY_KG = 350;
 const MAX_CONTINGENCY_KG = 1200;
 const ENROUTE_HOLD_SPEED_FUEL_FACTOR = 0.95;
+const LOSE_TIME_CLIMB_RATE_FPM = 1000;
+const LOSE_TIME_DESCENT_RATE_FPM = 1000;
 
 function parseNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : NaN;
+}
+
+function normalizeFlightLevelInput(rawValue, label = "Flight level") {
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    throw new Error(`${label} must be > 0`);
+  }
+  return rawValue >= 1000 ? rawValue / 100 : rawValue;
+}
+
+function normalizeAltitudeFtInput(rawValue, label = "Altitude") {
+  if (!Number.isFinite(rawValue) || rawValue <= 0) {
+    throw new Error(`${label} must be > 0 ft`);
+  }
+  // Treat 3-digit entries as FL shorthand (e.g., 370 -> 37000 ft).
+  return rawValue < 1000 ? rawValue * 100 : rawValue;
+}
+
+function userFlToTableFl(flightLevel) {
+  return flightLevel >= 100 ? flightLevel / 10 : flightLevel;
+}
+
+function getLrcTableFlRange() {
+  if (!LRC_CRUISE_TABLE || !Array.isArray(LRC_CRUISE_TABLE.altitudesFL) || LRC_CRUISE_TABLE.altitudesFL.length < 2) {
+    return { minFl: NaN, maxFl: NaN };
+  }
+  return {
+    minFl: LRC_CRUISE_TABLE.altitudesFL[0] * 10,
+    maxFl: LRC_CRUISE_TABLE.altitudesFL[LRC_CRUISE_TABLE.altitudesFL.length - 1] * 10,
+  };
+}
+
+function validateLrcFlightLevelRange(flightLevel, label = "Flight level") {
+  const { minFl, maxFl } = getLrcTableFlRange();
+  if (!Number.isFinite(minFl) || !Number.isFinite(maxFl)) return;
+  if (flightLevel < minFl || flightLevel > maxFl) {
+    throw new Error(`${label} out of range (FL${format(minFl, 0)}-FL${format(maxFl, 0)})`);
+  }
 }
 
 function getGlobalPerfAdjust() {
@@ -710,9 +749,35 @@ function calculateHoldTiming({
   };
 }
 
+function getLevelChangeRateFpm(levelChangeMode) {
+  if (levelChangeMode === "climb") return LOSE_TIME_CLIMB_RATE_FPM;
+  if (levelChangeMode === "descent") return LOSE_TIME_DESCENT_RATE_FPM;
+  return 0;
+}
+
+function getLevelChangeDurationMin(startFl, levelChange) {
+  if (levelChange.mode === "none") return 0;
+  const deltaFt = Math.abs((levelChange.newFl - startFl) * 100);
+  if (deltaFt === 0) return 0;
+  const rateFpm = getLevelChangeRateFpm(levelChange.mode);
+  if (rateFpm <= 0) {
+    throw new Error("Level change rate is invalid");
+  }
+  return deltaFt / rateFpm;
+}
+
 function getFlightLevelAtElapsed(startFl, levelChange, elapsedMin) {
   if (levelChange.mode === "none") return startFl;
-  return elapsedMin >= levelChange.afterMin ? levelChange.newFl : startFl;
+
+  const levelChangeStartMin = levelChange.afterMin;
+  const levelChangeDurationMin = getLevelChangeDurationMin(startFl, levelChange);
+  const levelChangeEndMin = levelChangeStartMin + levelChangeDurationMin;
+
+  if (elapsedMin <= levelChangeStartMin) return startFl;
+  if (elapsedMin >= levelChangeEndMin || levelChangeDurationMin <= 0) return levelChange.newFl;
+
+  const t = (elapsedMin - levelChangeStartMin) / levelChangeDurationMin;
+  return startFl + (levelChange.newFl - startFl) * t;
 }
 
 function validateLevelChange(levelChange, startFl) {
@@ -793,8 +858,13 @@ function getLrcCruiseState(weightT, flightLevel, windKt, perfAdjust = 0) {
     throw new Error("LRC cruise table is missing");
   }
 
-  const cruiseTableFl = flightLevel >= 100 ? flightLevel / 10 : flightLevel;
+  const cruiseTableFl = userFlToTableFl(flightLevel);
   const altitudeAxis = LRC_CRUISE_TABLE.altitudesFL;
+  const minFl = altitudeAxis[0];
+  const maxFl = altitudeAxis[altitudeAxis.length - 1];
+  if (cruiseTableFl < minFl || cruiseTableFl > maxFl) {
+    throw new Error(`LRC FL out of range (${format(minFl * 10, 0)}-${format(maxFl * 10, 0)})`);
+  }
   const tryInterp = (values, label) => {
     try {
       return interpolateFromAvailablePoints(altitudeAxis, values, cruiseTableFl, label);
@@ -809,11 +879,19 @@ function getLrcCruiseState(weightT, flightLevel, windKt, perfAdjust = 0) {
     ffEng: tryInterp(record.ffEngByAlt, `FF/ENG at ${record.weightT}t`),
   }));
 
-  const mach = interpolateAcrossWeightPoints(
-    metricsByWeight.map((m) => ({ weight: m.weight, value: m.mach })),
-    weightT,
-    "LRC Mach",
-  );
+  let mach;
+  try {
+    mach = interpolateAcrossWeightPoints(
+      metricsByWeight.map((m) => ({ weight: m.weight, value: m.mach })),
+      weightT,
+      "LRC Mach",
+    );
+  } catch (error) {
+    if (String(error?.message || "").startsWith("Insufficient LRC Mach data across weights")) {
+      throw new Error(`LRC Mach unavailable at FL${format(flightLevel, 0)} for interpolation across weights`);
+    }
+    throw error;
+  }
   const ias = interpolateAcrossWeightPoints(
     metricsByWeight.map((m) => ({ weight: m.weight, value: m.ias })),
     weightT,
@@ -879,6 +957,10 @@ function simulateToFixAndOptionalHold({
   let switchInfo = null;
   let holdRemainingMin = holdAtFixMin;
   let switched = false;
+  const levelChangeDurationMin = getLevelChangeDurationMin(startFl, levelChange);
+  const levelChangeStartMin = levelChange.mode === "none" ? Infinity : levelChange.afterMin;
+  const levelChangeEndMin =
+    levelChange.mode === "none" ? Infinity : levelChange.afterMin + levelChangeDurationMin;
 
   for (let guard = 0; guard < 20000; guard += 1) {
     if (remainingNm <= 1e-7 && holdRemainingMin <= 1e-7) break;
@@ -913,11 +995,11 @@ function simulateToFixAndOptionalHold({
     }
 
     let stepMin = dtMin;
-    const nextLevelChangeDelta =
-      levelChange.mode !== "none" && elapsedMin < levelChange.afterMin ? levelChange.afterMin - elapsedMin : Infinity;
+    const nextLevelChangeStartDelta = elapsedMin < levelChangeStartMin ? levelChangeStartMin - elapsedMin : Infinity;
+    const nextLevelChangeEndDelta = elapsedMin < levelChangeEndMin ? levelChangeEndMin - elapsedMin : Infinity;
     const nextSwitchDelta =
       inTransit && elapsedMin < switchToHoldSpeedAtMin ? switchToHoldSpeedAtMin - elapsedMin : Infinity;
-    stepMin = Math.min(stepMin, nextLevelChangeDelta, nextSwitchDelta);
+    stepMin = Math.min(stepMin, nextLevelChangeStartDelta, nextLevelChangeEndDelta, nextSwitchDelta);
 
     if (phase === "lrc-cruise" || phase === "hold-speed-enroute") {
       const timeToFixCandidate = (remainingNm / perf.gs) * 60;
@@ -964,6 +1046,46 @@ function simulateToFixAndOptionalHold({
   };
 }
 
+function calculateRequiredSpeedToMeetFixTime({ distanceNm, targetFixTimeMin, startFl, windKt }) {
+  if (!Number.isFinite(distanceNm) || distanceNm <= 0) {
+    throw new Error("Distance to fix must be > 0 NM");
+  }
+  if (!Number.isFinite(targetFixTimeMin) || targetFixTimeMin <= 0) {
+    throw new Error("Target fix time must be > 0 min");
+  }
+  if (!Number.isFinite(startFl) || startFl <= 0) {
+    throw new Error("Start FL must be > 0");
+  }
+  if (!Number.isFinite(windKt)) {
+    throw new Error("Wind is invalid");
+  }
+
+  const requiredGsKt = distanceNm / (targetFixTimeMin / 60);
+  const requiredTasKt = requiredGsKt - windKt;
+  if (requiredTasKt <= 0) {
+    throw new Error("Required speed is not achievable with current wind");
+  }
+
+  const atmosphere = atmosphereFromPressureAltitude({
+    pressureAltitudeFt: startFl * 100,
+    tempMode: "isa-dev",
+    isaDeviationC: 0,
+    oatC: 0,
+  });
+  const converted = tasToIasMach({
+    tasKt: requiredTasKt,
+    pressurePa: atmosphere.pressurePa,
+    speedOfSoundMps: atmosphere.speedOfSoundMps,
+  });
+
+  return {
+    requiredGsKt,
+    requiredTasKt,
+    requiredIasKt: converted.iasKt,
+    requiredMach: converted.mach,
+  };
+}
+
 function buildLoseTimeComparison({
   distanceNm,
   startWeightT,
@@ -974,6 +1096,12 @@ function buildLoseTimeComparison({
   levelChange,
   perfAdjust,
 }) {
+  if (!Number.isFinite(distanceNm)) throw new Error("Distance to fix is invalid");
+  if (!Number.isFinite(requiredDelayMin)) throw new Error("Required delay is invalid");
+  if (!Number.isFinite(startWeightT)) throw new Error("Current weight is invalid");
+  if (!Number.isFinite(startFl)) throw new Error("Current FL is invalid");
+  if (!Number.isFinite(cruiseWindKt) || !Number.isFinite(holdWindKt)) throw new Error("Wind is invalid");
+  if (!Number.isFinite(perfAdjust)) throw new Error("Performance adjustment is invalid");
   if (distanceNm <= 0) throw new Error("Distance to fix must be > 0 NM");
   if (requiredDelayMin < 0) throw new Error("Required delay must be >= 0 min");
   if (startWeightT <= 0) throw new Error("Current weight must be > 0");
@@ -1084,10 +1212,25 @@ function buildLoseTimeComparison({
     perfAdjust,
   });
 
+  let optionC = null;
+  let optionCError = "";
+  try {
+    optionC = calculateRequiredSpeedToMeetFixTime({
+      distanceNm,
+      targetFixTimeMin: targetFixTime,
+      startFl,
+      windKt: cruiseWindKt,
+    });
+  } catch (error) {
+    optionCError = String(error?.message || "Unable to compute required speed");
+  }
+
   return {
     baseline,
     optionA,
     optionB,
+    optionC,
+    optionCError,
     targetFixTime,
     requiredDelayMin,
     residualHoldMin,
@@ -1265,7 +1408,7 @@ function bindShortTrip() {
       const result = shortTripFuelAndAlt(anm, weight, perfAdjust, holdingMin);
 
       renderRows(out, [
-        ["Air Distance (ANM)", `${format(anm, 2)} nm`],
+        ["Air Distance (ANM)", `${format(anm, 0)} nm`],
         ["Flight Fuel", `${format(result.flightFuelKg, 0)} kg`],
         ["FRF (30 min hold @ 1500 ft)", `${format(result.frfKg, 0)} kg`],
         ["Contingency Fuel (5%, min 350, max 1200)", `${format(result.contingencyKg, 0)} kg`],
@@ -1300,7 +1443,7 @@ function bindLongRange() {
       const result = longRangeFuel(anm, weight, perfAdjust, holdingMin);
 
       renderRows(out, [
-        ["Air Distance (ANM)", `${format(anm, 2)} nm`],
+        ["Air Distance (ANM)", `${format(anm, 0)} nm`],
         ["Flight Fuel", `${format(result.flightFuel1000Kg, 3)} x 1000 kg`],
         ["Flight Fuel (kg)", `${format(result.flightFuel1000Kg * 1000, 0)} kg`],
         ["FRF (30 min hold @ 1500 ft)", `${format(result.frfKg, 0)} kg`],
@@ -1328,14 +1471,18 @@ function bindDiversion() {
     try {
       const gnm = parseNum(document.querySelector("#div-gnm").value);
       const wind = parseNum(document.querySelector("#div-wind").value);
-      const altitudeFt = parseNum(document.querySelector("#div-alt").value);
+      const altitudeRaw = parseNum(document.querySelector("#div-alt").value);
+      const altitudeFt = normalizeAltitudeFtInput(altitudeRaw, "Diversion altitude");
       const weightT = parseNum(document.querySelector("#div-weight").value);
       const holdingMin = parseNum(document.querySelector("#div-hold-min").value);
       const perfAdjust = getGlobalPerfAdjust();
+      if (altitudeRaw < 1000) {
+        document.querySelector("#div-alt").value = format(altitudeFt, 0);
+      }
 
       const result = diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, holdingMin);
       const rows = [
-        ["Air Distance (ANM)", `${format(result.anm, 2)} nm`],
+        ["Air Distance (ANM)", `${format(result.anm, 0)} nm`],
         ["Reference Fuel", `${format(result.referenceFuel1000Kg * 1000, 0)} kg`],
         ["Weight Adjustment", `${format(result.adjustment1000Kg * 1000, 0)} kg`],
         ["Flight Fuel", `${format(result.adjustedFuel1000Kg * 1000, 0)} kg`],
@@ -1397,7 +1544,8 @@ function bindHolding() {
     event.preventDefault();
     try {
       const weight = parseNum(document.querySelector("#hold-weight").value);
-      const altitude = parseNum(document.querySelector("#hold-alt").value);
+      const altitudeRaw = parseNum(document.querySelector("#hold-alt").value);
+      const altitude = normalizeAltitudeFtInput(altitudeRaw, "Altitude");
       const fuelAvailable = parseNum(document.querySelector("#fuel-available").value);
       const perfAdjust = getGlobalPerfAdjust();
       const timingMode = timingModeEl.value;
@@ -1410,11 +1558,19 @@ function bindHolding() {
       const timingIasRaw = String(document.querySelector("#hold-timing-ias").value || "").trim();
       const timingIsaDevC = parseNum(document.querySelector("#hold-timing-isa-dev").value);
 
+      if (altitudeRaw < 1000) {
+        document.querySelector("#hold-alt").value = format(altitude, 0);
+      }
+
       if (!Number.isFinite(weight) || weight <= 0) {
         throw new Error("Weight must be > 0 t");
       }
-      if (!Number.isFinite(altitude) || altitude <= 0) {
-        throw new Error("Altitude must be > 0 ft");
+      if (FLAPS_UP_TABLE && Array.isArray(FLAPS_UP_TABLE.altitudesFt) && FLAPS_UP_TABLE.altitudesFt.length > 1) {
+        const minAlt = FLAPS_UP_TABLE.altitudesFt[0];
+        const maxAlt = FLAPS_UP_TABLE.altitudesFt[FLAPS_UP_TABLE.altitudesFt.length - 1];
+        if (altitude < minAlt || altitude > maxAlt) {
+          throw new Error(`Altitude out of range (${format(minAlt, 0)}-${format(maxAlt, 0)} ft)`);
+        }
       }
       if (!Number.isFinite(fuelAvailable) || fuelAvailable < 0) {
         throw new Error("Fuel available must be >= 0 kg");
@@ -1535,16 +1691,36 @@ function bindLoseTime() {
     try {
       const distanceNm = parseNum(document.querySelector("#lt-distance").value);
       const startWeightT = parseNum(document.querySelector("#lt-weight").value);
-      const startFl = parseNum(document.querySelector("#lt-fl").value);
+      const startFlRaw = parseNum(document.querySelector("#lt-fl").value);
+      const startFl = normalizeFlightLevelInput(startFlRaw, "Current flight level");
       const requiredDelayMin = parseNum(document.querySelector("#lt-delay").value);
       const windKt = parseNum(document.querySelector("#lt-wind").value);
       const perfAdjust = getGlobalPerfAdjust();
       const levelChangeMode = levelModeEl.value;
+      const newFlRaw = parseNum(newFlEl.value);
+      const newFl =
+        levelChangeMode === "none" ? startFl : normalizeFlightLevelInput(newFlRaw, "New flight level");
+      validateLrcFlightLevelRange(startFl, "Current flight level");
+      if (levelChangeMode !== "none") {
+        validateLrcFlightLevelRange(newFl, "New flight level");
+      }
+
+      if (startFlRaw >= 1000) {
+        document.querySelector("#lt-fl").value = format(startFl, 0);
+      }
+      if (levelChangeMode !== "none" && newFlRaw >= 1000) {
+        newFlEl.value = format(newFl, 0);
+      }
+
       const levelChange = {
         mode: levelChangeMode,
         afterMin: parseNum(changeAfterEl.value),
-        newFl: parseNum(newFlEl.value),
+        newFl,
       };
+      const levelChangeSummary =
+        levelChangeMode === "none"
+          ? "None"
+          : `${levelChangeMode === "climb" ? "Climb" : "Descent"} to FL${format(levelChange.newFl, 0)} after ${format(levelChange.afterMin, 0)} min`;
 
       const comparison = buildLoseTimeComparison({
         distanceNm,
@@ -1561,8 +1737,19 @@ function bindLoseTime() {
       const switchText = switchInfo
         ? `${formatMinutes(switchInfo.atElapsedMin)} elapsed, ${format(switchInfo.remainingNmAtSwitch, 1)} NM to fix`
         : "No enroute speed reduction needed";
+      const optionCRows = comparison.optionC
+        ? [
+            ["Option C Time to Fix (target)", formatMinutes(comparison.targetFixTime)],
+            [
+              "Option C Required IAS / Mach",
+              `${format(comparison.optionC.requiredIasKt, 0)} kt / ${format(comparison.optionC.requiredMach, 3)}`,
+            ],
+          ]
+        : [["Option C", comparison.optionCError || "Unable to compute required speed"]];
 
       renderRows(out, [
+        ["Start FL (used)", `FL${format(startFl, 0)}`],
+        ["Level Change (used)", levelChangeSummary],
         ["Required Delay", `${format(requiredDelayMin, 2)} min`],
         ["Baseline LRC Time to Fix", formatMinutes(comparison.baseline.timeToFixMin)],
         ["Baseline LRC Fuel to Fix", `${format(comparison.baseline.fuelBurnKg, 0)} kg`],
@@ -1576,6 +1763,8 @@ function bindLoseTime() {
         ["Option B Delay Achieved", `${format(comparison.optionB.totalTimeMin - comparison.baseline.timeToFixMin, 2)} min`],
         ["Option B Speed Reduction Start", switchText],
         ["Option B Residual Hold at Fix", `${format(comparison.residualHoldMin, 2)} min`],
+        ["__spacer__", ""],
+        ...optionCRows,
         ["__spacer__", ""],
         ["Fuel Difference (A - B)", `${format(comparison.optionA.fuelBurnKg - comparison.optionB.fuelBurnKg, 0)} kg`],
         ["Final Weight Option A / B", `${format(comparison.optionA.finalWeightT, 2)} / ${format(comparison.optionB.finalWeightT, 2)} t`],
@@ -1627,13 +1816,14 @@ function bindConversion() {
     event.preventDefault();
     try {
       const tempMode = tempModeEl.value;
-      const fl = parseNum(flEl.value);
+      const flRaw = parseNum(flEl.value);
+      const fl = normalizeFlightLevelInput(flRaw, "Flight level");
       const oatC = parseNum(oatEl.value);
       const isaDeviationC = parseNum(isaDevEl.value);
       const mode = modeEl.value;
 
-      if (!Number.isFinite(fl)) {
-        throw new Error("Invalid flight level");
+      if (flRaw >= 1000) {
+        flEl.value = format(fl, 0);
       }
       const pressureAltitudeFt = fl * 100;
       const atmosphere = atmosphereFromPressureAltitude({
