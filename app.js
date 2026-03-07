@@ -291,13 +291,15 @@ function diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, additional
     throw new Error("Global flight plan performance adjustment is invalid");
   }
 
-  const anm = bilinearClamped(
-    DIVERSION_LRC_TABLE.groundToAir.gnmAxis,
-    DIVERSION_LRC_TABLE.groundToAir.windAxis,
-    DIVERSION_LRC_TABLE.groundToAir.values,
-    gnm,
-    wind,
-  );
+  const anm = Math.abs(wind) < 1e-9
+    ? clampToAxis(DIVERSION_LRC_TABLE.groundToAir.gnmAxis, gnm)
+    : bilinearClamped(
+        DIVERSION_LRC_TABLE.groundToAir.gnmAxis,
+        DIVERSION_LRC_TABLE.groundToAir.windAxis,
+        DIVERSION_LRC_TABLE.groundToAir.values,
+        gnm,
+        wind,
+      );
 
   const referenceFuel1000Kg = bilinearClamped(
     DIVERSION_LRC_TABLE.fuelTime.anmAxis,
