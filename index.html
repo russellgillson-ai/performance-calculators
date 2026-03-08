@@ -144,6 +144,56 @@
         <div id="diversion-out" class="results"></div>
       </section>
 
+      <section class="panel" aria-labelledby="go-around-heading">
+        <h2 id="go-around-heading">Go-Around Climb Gradient</h2>
+        <form id="go-around-form" class="grid">
+          <label>
+            Flap
+            <select id="go-around-flap">
+              <option value="20" selected>Flap 20</option>
+              <option value="5">Flap 5</option>
+            </select>
+          </label>
+          <label>
+            OAT (°C) <span class="label-note" id="go-around-oat-range"></span>
+            <input type="number" step="0.1" id="go-around-oat" value="10" />
+          </label>
+          <label>
+            Airport Elevation (ft) <span class="label-note" id="go-around-elev-range"></span>
+            <input type="number" step="1" id="go-around-elevation" value="0" />
+          </label>
+          <label>
+            Landing Weight (t) <span class="label-note" id="go-around-weight-range"></span>
+            <input type="number" step="0.1" min="0" id="go-around-weight" value="200" />
+          </label>
+          <label>
+            Target Gradient (%)
+            <input type="number" step="0.1" id="go-around-target-gradient" value="" />
+          </label>
+          <label>
+            Speed
+            <select id="go-around-speed"></select>
+          </label>
+          <label>
+            Anti-Ice
+            <select id="go-around-anti-ice">
+              <option value="off" selected>Off</option>
+              <option value="engineOn">Engine On</option>
+              <option value="engineWingOn">Engine + Wing On</option>
+            </select>
+          </label>
+          <label>
+            Icing Penalty
+            <select id="go-around-icing-penalty">
+              <option value="off" selected>Off</option>
+              <option value="on">On</option>
+            </select>
+          </label>
+          <button type="submit">Calculate</button>
+        </form>
+        <div id="go-around-out" class="results"></div>
+      </section>
+
       <section class="panel" aria-labelledby="holding-heading">
         <h2 id="holding-heading">Holding + Endurance</h2>
         <form id="holding-form" class="grid">
@@ -187,7 +237,7 @@
             <input type="number" step="1" min="0" id="hold-wind-speed" value="20" />
           </label>
           <label>
-            Timing IAS (kt)
+            Planned Hold IAS
             <input type="number" step="1" min="0" id="hold-timing-ias" placeholder="Auto from hold table" />
           </label>
           <label>
@@ -298,6 +348,7 @@
     <script src="./driftdown_data.js"></script>
     <script src="./flaps_up_data.js"></script>
     <script src="./diversion_data.js"></script>
+    <script src="./go_around_data.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

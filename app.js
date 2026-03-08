@@ -4,6 +4,7 @@ const LRC_ALTITUDE_LIMITS_TABLE = window.LRC_ALTITUDE_LIMITS_TABLE;
 const DRIFTDOWN_TABLE = window.DRIFTDOWN_TABLE;
 const FLAPS_UP_TABLE = window.FLAPS_UP_TABLE;
 const DIVERSION_LRC_TABLE = window.DIVERSION_LRC_TABLE;
+const GO_AROUND_TABLE = window.GO_AROUND_TABLE;
 
 const { shortTripAnm, longRangeAnm, longRangeFuel: longRangeFuelTable, shortTripFuelAlt } = TABLE_DATA;
 
@@ -30,6 +31,10 @@ const MAX_CONTINGENCY_KG = 1200;
 const ENROUTE_HOLD_SPEED_FUEL_FACTOR = 0.95;
 const LOSE_TIME_CLIMB_RATE_FPM = 1000;
 const LOSE_TIME_DESCENT_RATE_FPM = 1000;
+const GO_AROUND_ANTI_ICE_ADJUSTMENT = {
+  engineOn: { oatLe8: -0.1, oatGt8Le20: -0.2 },
+  engineWingOn: { oatLe8: -0.1, oatGt8Le20: -0.2 },
+};
 
 function parseNum(value) {
   const n = Number(value);
@@ -622,6 +627,177 @@ function singleEngineLrcCapabilityAltitude(startWeightT, isaDeviationCInput) {
     isaDeviationCUsed,
     clampedToIsa10,
     altitudeFt,
+  };
+}
+
+function getGoAroundConfig(flapSelection) {
+  if (!GO_AROUND_TABLE) {
+    throw new Error("Go-around table is missing");
+  }
+  const key = String(flapSelection) === "5" ? "flap5" : "flap20";
+  const config = GO_AROUND_TABLE[key];
+  if (!config) {
+    throw new Error("Invalid flap selection");
+  }
+  return config;
+}
+
+function getGoAroundRanges(config) {
+  return {
+    minOatC: config.reference.oatAxisC[0],
+    maxOatC: config.reference.oatAxisC[config.reference.oatAxisC.length - 1],
+    minAltitudeFt: config.reference.altitudeAxisFt[0],
+    maxAltitudeFt: config.reference.altitudeAxisFt[config.reference.altitudeAxisFt.length - 1],
+    minWeightT: config.weightAdjustment.weightAxisT[0],
+    maxWeightT: config.weightAdjustment.weightAxisT[config.weightAdjustment.weightAxisT.length - 1],
+  };
+}
+
+function lookupGoAroundReferenceGradient(config, oatC, elevationFt) {
+  const oatAxis = config.reference.oatAxisC;
+  const altitudeAxis = config.reference.altitudeAxisFt;
+  const grid = config.reference.gradientPctByOatAlt;
+
+  const byAltitude = altitudeAxis.map((_, altitudeIdx) => {
+    const valuesByOat = grid.map((row) => row[altitudeIdx]);
+    return interpolateFromAvailablePointsClamped(oatAxis, valuesByOat, oatC, "go-around reference gradient");
+  });
+
+  return interpolateFromAvailablePointsClamped(altitudeAxis, byAltitude, elevationFt, "go-around reference gradient");
+}
+
+function lookupGoAroundWeightAdjustment(config, landingWeightT, referenceGradientPct) {
+  const profile = buildGoAroundWeightAdjustmentProfile(config, referenceGradientPct);
+  return linearClamped(profile.weightAxis, profile.adjustmentByWeightPct, landingWeightT);
+}
+
+function buildGoAroundWeightAdjustmentProfile(config, referenceGradientPct) {
+  const gradientAxis = config.weightAdjustment.gradientAxisPct;
+  const weightAxis = config.weightAdjustment.weightAxisT;
+  const adjustmentByWeightPct = config.weightAdjustment.adjustmentPctByWeightGradient.map((row) =>
+    linearClamped(gradientAxis, row, referenceGradientPct),
+  );
+  return { weightAxis, adjustmentByWeightPct };
+}
+
+function solveGoAroundWeightForTargetGradient({
+  config,
+  referenceGradientPct,
+  baseGradientWithoutWeightPct,
+  targetGradientPct,
+}) {
+  const profile = buildGoAroundWeightAdjustmentProfile(config, referenceGradientPct);
+  const requiredWeightAdjustmentPct = targetGradientPct - baseGradientWithoutWeightPct;
+  const landingWeightT = interpolateFromAvailablePointsClamped(
+    profile.adjustmentByWeightPct,
+    profile.weightAxis,
+    requiredWeightAdjustmentPct,
+    "go-around weight solution",
+  );
+  const appliedWeightAdjustmentPct = linearClamped(profile.weightAxis, profile.adjustmentByWeightPct, landingWeightT);
+  return {
+    landingWeightT,
+    requiredWeightAdjustmentPct,
+    appliedWeightAdjustmentPct,
+  };
+}
+
+function getGoAroundSpeedRow(config, speedLabel) {
+  const row = config.speedAdjustment.rows.find((item) => item.speed === speedLabel);
+  if (!row) {
+    throw new Error(`Invalid speed selection: ${speedLabel}`);
+  }
+  return row;
+}
+
+function lookupGoAroundSpeedAdjustment(config, speedLabel, referenceGradientPct) {
+  const speedRow = getGoAroundSpeedRow(config, speedLabel);
+  return linearClamped(config.speedAdjustment.gradientAxisPct, speedRow.adjustments, referenceGradientPct);
+}
+
+function lookupGoAroundAntiIceAdjustment(_config, antiIceMode, oatC) {
+  if (antiIceMode === "off") return 0;
+  const antiIceData = GO_AROUND_ANTI_ICE_ADJUSTMENT[antiIceMode];
+  if (!antiIceData) {
+    throw new Error("Invalid anti-ice selection");
+  }
+  if (oatC <= 8) return antiIceData.oatLe8;
+  if (oatC <= 20) return antiIceData.oatGt8Le20;
+  return 0;
+}
+
+function calculateGoAroundGradient({
+  flapSelection,
+  oatCInput,
+  elevationFtInput,
+  landingWeightTInput,
+  targetGradientPctInput,
+  speedLabel,
+  antiIceMode,
+  applyIcingPenalty,
+}) {
+  const config = getGoAroundConfig(flapSelection);
+  const ranges = getGoAroundRanges(config);
+
+  if (!Number.isFinite(oatCInput)) throw new Error("OAT is invalid");
+  if (!Number.isFinite(elevationFtInput)) throw new Error("Airport elevation is invalid");
+  const hasLandingWeightInput = Number.isFinite(landingWeightTInput);
+  const hasTargetGradientInput = Number.isFinite(targetGradientPctInput);
+  if (!hasLandingWeightInput && !hasTargetGradientInput) {
+    throw new Error("Enter Landing Weight or Target Gradient");
+  }
+  if (hasLandingWeightInput && landingWeightTInput <= 0) {
+    throw new Error("Landing weight must be > 0 t");
+  }
+
+  const oatC = clampToAxis(config.reference.oatAxisC, oatCInput);
+  const elevationFt = clampToAxis(config.reference.altitudeAxisFt, elevationFtInput);
+  const referenceGradientPct = lookupGoAroundReferenceGradient(config, oatC, elevationFt);
+  const speedAdjustmentPct = lookupGoAroundSpeedAdjustment(config, speedLabel, referenceGradientPct);
+  const antiIceAdjustmentPct = lookupGoAroundAntiIceAdjustment(config, antiIceMode, oatC);
+  const icingPenaltyPct = applyIcingPenalty ? -config.icingPenaltyPct : 0;
+  const baseGradientWithoutWeightPct = referenceGradientPct + speedAdjustmentPct + antiIceAdjustmentPct + icingPenaltyPct;
+
+  let landingWeightT;
+  let weightAdjustmentPct;
+  let mode;
+
+  if (hasTargetGradientInput) {
+    const solution = solveGoAroundWeightForTargetGradient({
+      config,
+      referenceGradientPct,
+      baseGradientWithoutWeightPct,
+      targetGradientPct: targetGradientPctInput,
+    });
+    landingWeightT = solution.landingWeightT;
+    weightAdjustmentPct = solution.appliedWeightAdjustmentPct;
+    mode = "target";
+  } else {
+    landingWeightT = clampToAxis(config.weightAdjustment.weightAxisT, landingWeightTInput);
+    weightAdjustmentPct = lookupGoAroundWeightAdjustment(config, landingWeightT, referenceGradientPct);
+    mode = "weight";
+  }
+
+  const finalGradientPct =
+    baseGradientWithoutWeightPct + weightAdjustmentPct;
+
+  return {
+    mode,
+    flapLabel: config.flap,
+    ranges,
+    inputsUsed: {
+      oatC,
+      elevationFt,
+      landingWeightT,
+      speedLabel,
+    },
+    targetGradientPct: hasTargetGradientInput ? targetGradientPctInput : NaN,
+    referenceGradientPct,
+    weightAdjustmentPct,
+    speedAdjustmentPct,
+    antiIceAdjustmentPct,
+    icingPenaltyPct,
+    finalGradientPct,
   };
 }
 
@@ -1231,6 +1407,35 @@ function interpolateFromAvailablePoints(xAxis, yAxis, x, label) {
   if (x < minX || x > maxX) {
     throw new Error(`${label} out of range (${format(minX, 0)}-${format(maxX, 0)})`);
   }
+
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const p0 = points[i];
+    const p1 = points[i + 1];
+    if (x >= p0.x && x <= p1.x) {
+      if (p1.x === p0.x) return p0.y;
+      const t = (x - p0.x) / (p1.x - p0.x);
+      return p0.y + (p1.y - p0.y) * t;
+    }
+  }
+
+  return points[points.length - 1].y;
+}
+
+function interpolateFromAvailablePointsClamped(xAxis, yAxis, x, label) {
+  const points = xAxis
+    .map((xVal, idx) => ({ x: xVal, y: yAxis[idx] }))
+    .filter((point) => Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
+
+  if (points.length === 0) {
+    throw new Error(`No ${label} data available`);
+  }
+  if (points.length === 1) {
+    return points[0].y;
+  }
+
+  if (x <= points[0].x) return points[0].y;
+  if (x >= points[points.length - 1].x) return points[points.length - 1].y;
 
   for (let i = 0; i < points.length - 1; i += 1) {
     const p0 = points[i];
@@ -2483,6 +2688,114 @@ function bindConversion() {
   form.dispatchEvent(new Event("submit"));
 }
 
+function bindGoAround() {
+  const form = document.querySelector("#go-around-form");
+  const out = document.querySelector("#go-around-out");
+  if (!form || !out) return;
+
+  const flapEl = document.querySelector("#go-around-flap");
+  const oatEl = document.querySelector("#go-around-oat");
+  const elevationEl = document.querySelector("#go-around-elevation");
+  const weightEl = document.querySelector("#go-around-weight");
+  const targetGradientEl = document.querySelector("#go-around-target-gradient");
+  const speedEl = document.querySelector("#go-around-speed");
+  const antiIceEl = document.querySelector("#go-around-anti-ice");
+  const icingPenaltyEl = document.querySelector("#go-around-icing-penalty");
+
+  const setRangeText = (selector, text) => {
+    const el = document.querySelector(selector);
+    if (el) el.textContent = text;
+  };
+
+  const updateFlapDependentUi = () => {
+    const config = getGoAroundConfig(flapEl.value);
+    const ranges = getGoAroundRanges(config);
+
+    setRangeText("#go-around-oat-range", `(${format(ranges.minOatC, 0)}-${format(ranges.maxOatC, 0)})`);
+    setRangeText("#go-around-elev-range", `(${format(ranges.minAltitudeFt, 0)}-${format(ranges.maxAltitudeFt, 0)})`);
+    setRangeText("#go-around-weight-range", `(${format(ranges.minWeightT, 0)}-${format(ranges.maxWeightT, 0)})`);
+
+    const previousSpeed = speedEl.value;
+    const speedOptions = config.speedAdjustment.rows.map((row) => row.speed);
+    speedEl.innerHTML = speedOptions.map((speed) => `<option value="${speed}">${speed}</option>`).join("");
+    if (speedOptions.includes(previousSpeed)) {
+      speedEl.value = previousSpeed;
+    } else {
+      const preferred = speedOptions.find((speed) => speed.includes("+5")) || speedOptions[0];
+      speedEl.value = preferred;
+    }
+  };
+
+  flapEl.addEventListener("change", () => {
+    updateFlapDependentUi();
+    form.dispatchEvent(new Event("submit"));
+  });
+
+  const chooseInputMode = (source) => {
+    if (source === "target" && targetGradientEl.value.trim() !== "") {
+      weightEl.value = "";
+    } else if (source === "weight" && weightEl.value.trim() !== "") {
+      targetGradientEl.value = "";
+    }
+  };
+
+  weightEl.addEventListener("input", () => {
+    chooseInputMode("weight");
+  });
+  targetGradientEl.addEventListener("input", () => {
+    chooseInputMode("target");
+  });
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    try {
+      const weightText = weightEl.value.trim();
+      const targetText = targetGradientEl.value.trim();
+
+      const result = calculateGoAroundGradient({
+        flapSelection: flapEl.value,
+        oatCInput: parseNum(oatEl.value),
+        elevationFtInput: parseNum(elevationEl.value),
+        landingWeightTInput: weightText === "" ? NaN : parseNum(weightText),
+        targetGradientPctInput: targetText === "" ? NaN : parseNum(targetText),
+        speedLabel: speedEl.value,
+        antiIceMode: antiIceEl.value,
+        applyIcingPenalty: icingPenaltyEl.value === "on",
+      });
+
+      oatEl.value = format(result.inputsUsed.oatC, 1);
+      elevationEl.value = format(result.inputsUsed.elevationFt, 0);
+      if (result.mode === "weight") {
+        weightEl.value = format(result.inputsUsed.landingWeightT, 1);
+      } else {
+        targetGradientEl.value = format(result.targetGradientPct, 1);
+      }
+
+      const rows = [
+        ["Flap / Speed", `${result.flapLabel} / ${result.inputsUsed.speedLabel}`],
+        ...(result.mode === "target"
+          ? [
+              ["Target Gradient", `${format(result.targetGradientPct, 1)} %`],
+              ["Required Landing Weight", `${format(result.inputsUsed.landingWeightT, 1)} t`],
+            ]
+          : []),
+        ["Reference Gradient", `${format(result.referenceGradientPct, 1)} %`],
+        ["Weight Adjustment", `${format(result.weightAdjustmentPct, 1)} %`],
+        ["Speed Adjustment", `${format(result.speedAdjustmentPct, 1)} %`],
+        ["Anti-Ice Adjustment", `${format(result.antiIceAdjustmentPct, 1)} %`],
+        ["Icing Penalty", `${format(result.icingPenaltyPct, 1)} %`],
+        ["Final Go-Around Gradient", `${format(result.finalGradientPct, 1)} %`],
+      ];
+      renderRows(out, rows);
+    } catch (error) {
+      renderError(out, error.message);
+    }
+  });
+
+  updateFlapDependentUi();
+  form.dispatchEvent(new Event("submit"));
+}
+
 function bindGlobalSettings() {
   const globalPerfEl = document.querySelector("#global-perf-adjust");
   if (!globalPerfEl) return;
@@ -2598,6 +2911,7 @@ bindShortTrip();
 bindLongRange();
 bindLrcAltitudeLimits();
 bindDiversion();
+bindGoAround();
 bindHolding();
 bindLoseTime();
 bindConversion();

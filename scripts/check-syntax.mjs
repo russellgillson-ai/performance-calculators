@@ -6,6 +6,7 @@ const files = [
   "lrc_data.js",
   "flaps_up_data.js",
   "diversion_data.js",
+  "go_around_data.js",
   "sw.js",
 ];
 

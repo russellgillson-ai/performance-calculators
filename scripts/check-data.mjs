@@ -8,6 +8,7 @@ const files = [
   "driftdown_data.js",
   "flaps_up_data.js",
   "diversion_data.js",
+  "go_around_data.js",
 ];
 const context = { window: {} };
 vm.createContext(context);
@@ -24,6 +25,7 @@ const required = [
   "DRIFTDOWN_TABLE",
   "FLAPS_UP_TABLE",
   "DIVERSION_LRC_TABLE",
+  "GO_AROUND_TABLE",
 ];
 for (const key of required) {
   if (!(key in context.window)) {
@@ -34,6 +36,11 @@ for (const key of required) {
 const diversion = context.window.DIVERSION_LRC_TABLE;
 if (!(diversion.low && diversion.high)) {
   throw new Error("DIVERSION_LRC_TABLE must contain low/high bands");
+}
+
+const goAround = context.window.GO_AROUND_TABLE;
+if (!(goAround.flap20 && goAround.flap5)) {
+  throw new Error("GO_AROUND_TABLE must contain flap20 and flap5");
 }
 
 console.log("Data checks passed.");
