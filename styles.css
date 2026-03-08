@@ -89,6 +89,13 @@ body {
   color: #4a657c;
 }
 
+.submodule-title {
+  margin: 0.35rem 0 0.45rem;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: #1d3f59;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -222,7 +229,8 @@ button:hover {
   #short-trip-form,
   #long-range-form,
   #lrc-altitude-form,
-  #engine-out-form,
+  #engine-out-drift-form,
+  #engine-out-diversion-form,
   #diversion-form,
   #go-around-form,
   #holding-form,

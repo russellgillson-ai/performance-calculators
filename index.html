@@ -110,7 +110,8 @@
 
       <section class="panel" aria-labelledby="engine-out-heading">
         <h2 id="engine-out-heading">Engine-Out / Driftdown</h2>
-        <form id="engine-out-form" class="grid">
+        <h3 class="submodule-title">Driftdown</h3>
+        <form id="engine-out-drift-form" class="grid">
           <label>
             Start Weight (t)
             <input type="number" step="0.1" min="0" id="eo-weight" value="200" />
@@ -127,13 +128,31 @@
             Driftdown Wind +/- <span class="label-note" id="eo-drift-wind-range"></span>
             <input type="number" step="1" id="eo-drift-wind" value="0" />
           </label>
+          <button type="submit">Calculate</button>
+        </form>
+        <div id="engine-out-drift-out" class="results"></div>
+
+        <h3 class="submodule-title">EO LRC Diversion</h3>
+        <form id="engine-out-diversion-form" class="grid">
+          <label>
+            Start Weight (t)
+            <input type="number" step="0.1" min="0" id="eo-div-weight" value="200" />
+          </label>
+          <label>
+            EO LRC Diversion Distance <span class="label-note" id="eo-div-gnm-range"></span>
+            <input type="number" step="1" min="0" id="eo-div-gnm" value="400" />
+          </label>
+          <label>
+            EO LRC Diversion Wind +/- <span class="label-note" id="eo-div-wind-range"></span>
+            <input type="number" step="1" id="eo-div-wind" value="0" />
+          </label>
           <label>
             EO LRC Diversion Alt/FL <span class="label-note" id="eo-div-alt-range"></span>
-            <input type="number" step="1" min="0" id="eo-div-alt" value="" />
+            <input type="number" step="1" min="0" id="eo-div-alt" value="250" />
           </label>
           <button type="submit">Calculate</button>
         </form>
-        <div id="engine-out-out" class="results"></div>
+        <div id="engine-out-diversion-out" class="results"></div>
       </section>
 
       <section class="panel" aria-labelledby="diversion-heading">
