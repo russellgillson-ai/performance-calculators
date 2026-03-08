@@ -4,6 +4,7 @@ const files = [
   "app.js",
   "data.js",
   "lrc_data.js",
+  "eo_diversion_data.js",
   "flaps_up_data.js",
   "diversion_data.js",
   "go_around_data.js",

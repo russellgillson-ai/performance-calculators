@@ -15,6 +15,7 @@
 body {
   margin: 0;
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+  -webkit-text-size-adjust: 100%;
   color: var(--text);
   background:
     radial-gradient(circle at 5% 10%, rgba(0, 92, 153, 0.12), transparent 28%),
@@ -26,7 +27,11 @@ body {
 .layout {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 1.5rem 1rem 2.5rem;
+  padding:
+    calc(1.5rem + env(safe-area-inset-top))
+    calc(1rem + env(safe-area-inset-right))
+    calc(2.5rem + env(safe-area-inset-bottom))
+    calc(1rem + env(safe-area-inset-left));
   display: grid;
   gap: 1rem;
 }
@@ -84,15 +89,9 @@ body {
   color: #4a657c;
 }
 
-.module-assumptions {
-  margin: -0.2rem 0 0.7rem;
-  font-size: 0.82rem;
-  color: #4a657c;
-}
-
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 0.65rem;
   align-items: end;
 }
@@ -131,10 +130,11 @@ input.auto-derived {
 input,
 select,
 button {
-  height: 2.3rem;
+  min-height: 2.75rem;
   border-radius: 8px;
   border: 1px solid #aac1d3;
   font: inherit;
+  font-size: 1rem;
   padding: 0 0.6rem;
 }
 
@@ -165,9 +165,10 @@ button:hover {
 }
 
 .result-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.4rem 1rem;
 }
 
 .result-spacer {
@@ -185,10 +186,13 @@ button:hover {
 
 .result-key {
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .result-value {
   font-weight: 700;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .error {
@@ -214,13 +218,60 @@ button:hover {
   font-size: 0.9rem;
 }
 
+@media (min-width: 981px) and (max-width: 1366px) and (orientation: landscape) {
+  #short-trip-form,
+  #long-range-form,
+  #lrc-altitude-form,
+  #engine-out-form,
+  #diversion-form,
+  #go-around-form,
+  #holding-form,
+  #lose-time-form,
+  #conversion-form {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .layout {
+    max-width: 100%;
+  }
+
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid button,
+  .grid-subheading,
+  .global-setting-field {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 680px) {
   .layout {
-    padding: 0.8rem;
+    padding:
+      calc(0.8rem + env(safe-area-inset-top))
+      calc(0.8rem + env(safe-area-inset-right))
+      calc(0.8rem + env(safe-area-inset-bottom))
+      calc(0.8rem + env(safe-area-inset-left));
   }
 
   .panel,
   .hero {
     border-radius: 12px;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .result-row {
+    grid-template-columns: 1fr;
+  }
+
+  .result-value {
+    text-align: left;
+    white-space: normal;
   }
 }

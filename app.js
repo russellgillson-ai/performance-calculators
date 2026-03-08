@@ -2,6 +2,7 @@ const TABLE_DATA = window.TABLE_DATA;
 const LRC_CRUISE_TABLE = window.LRC_CRUISE_TABLE;
 const LRC_ALTITUDE_LIMITS_TABLE = window.LRC_ALTITUDE_LIMITS_TABLE;
 const DRIFTDOWN_TABLE = window.DRIFTDOWN_TABLE;
+const EO_DIVERSION_TABLE = window.EO_DIVERSION_TABLE;
 const FLAPS_UP_TABLE = window.FLAPS_UP_TABLE;
 const DIVERSION_LRC_TABLE = window.DIVERSION_LRC_TABLE;
 const GO_AROUND_TABLE = window.GO_AROUND_TABLE;
@@ -634,6 +635,116 @@ function singleEngineLrcCapabilityAltitude(startWeightT, isaDeviationCInput) {
     isaDeviationCUsed,
     clampedToIsa10,
     altitudeFt,
+  };
+}
+
+function getEoDiversionRanges() {
+  if (!EO_DIVERSION_TABLE) {
+    return {
+      minGnm: NaN,
+      maxGnm: NaN,
+      minWindKt: NaN,
+      maxWindKt: NaN,
+      minAnm: NaN,
+      maxAnm: NaN,
+      minAltitudeFt: NaN,
+      maxAltitudeFt: NaN,
+      minWeightT: NaN,
+      maxWeightT: NaN,
+    };
+  }
+  return {
+    minGnm: EO_DIVERSION_TABLE.groundToAir.gnmAxis[0],
+    maxGnm: EO_DIVERSION_TABLE.groundToAir.gnmAxis[EO_DIVERSION_TABLE.groundToAir.gnmAxis.length - 1],
+    minWindKt: EO_DIVERSION_TABLE.groundToAir.windAxis[0],
+    maxWindKt: EO_DIVERSION_TABLE.groundToAir.windAxis[EO_DIVERSION_TABLE.groundToAir.windAxis.length - 1],
+    minAnm: EO_DIVERSION_TABLE.fuelTime.anmAxis[0],
+    maxAnm: EO_DIVERSION_TABLE.fuelTime.anmAxis[EO_DIVERSION_TABLE.fuelTime.anmAxis.length - 1],
+    minAltitudeFt: EO_DIVERSION_TABLE.fuelTime.altitudeAxisFt[0],
+    maxAltitudeFt: EO_DIVERSION_TABLE.fuelTime.altitudeAxisFt[EO_DIVERSION_TABLE.fuelTime.altitudeAxisFt.length - 1],
+    minWeightT: EO_DIVERSION_TABLE.fuelAdjustment.weightAxisT[0],
+    maxWeightT: EO_DIVERSION_TABLE.fuelAdjustment.weightAxisT[EO_DIVERSION_TABLE.fuelAdjustment.weightAxisT.length - 1],
+  };
+}
+
+function eoDiversionFuelTime(gnmInput, windInputKt, altitudeInputFt, weightInputT, perfAdjust) {
+  if (!EO_DIVERSION_TABLE) {
+    throw new Error("EO diversion table is missing");
+  }
+  if (
+    !Number.isFinite(gnmInput) ||
+    !Number.isFinite(windInputKt) ||
+    !Number.isFinite(altitudeInputFt) ||
+    !Number.isFinite(weightInputT)
+  ) {
+    throw new Error("EO diversion input is invalid");
+  }
+  if (!Number.isFinite(perfAdjust)) {
+    throw new Error("Global flight plan performance adjustment is invalid");
+  }
+
+  const gnmAxis = EO_DIVERSION_TABLE.groundToAir.gnmAxis;
+  const windAxis = EO_DIVERSION_TABLE.groundToAir.windAxis;
+  const altAxis = EO_DIVERSION_TABLE.fuelTime.altitudeAxisFt;
+  const weightAxis = EO_DIVERSION_TABLE.fuelAdjustment.weightAxisT;
+  const gnmUsed = clampToAxis(gnmAxis, gnmInput);
+  const windUsedKt = clampToAxis(windAxis, windInputKt);
+  const altitudeUsedFt = clampToAxis(altAxis, altitudeInputFt);
+  const weightUsedT = clampToAxis(weightAxis, weightInputT);
+
+  const warnings = [];
+  if (gnmUsed !== gnmInput) warnings.push(`EO diversion distance clamped to ${format(gnmUsed, 0)} NM`);
+  if (windUsedKt !== windInputKt) warnings.push(`EO diversion wind clamped to ${format(windUsedKt, 0)} kt`);
+  if (altitudeUsedFt !== altitudeInputFt) warnings.push(`EO diversion altitude clamped to ${format(altitudeUsedFt, 0)} ft`);
+  if (weightUsedT !== weightInputT) warnings.push(`EO diversion weight clamped to ${format(weightUsedT, 1)} t`);
+
+  const anm = Math.abs(windUsedKt) < 1e-9
+    ? gnmUsed
+    : bilinearClamped(
+        EO_DIVERSION_TABLE.groundToAir.gnmAxis,
+        EO_DIVERSION_TABLE.groundToAir.windAxis,
+        EO_DIVERSION_TABLE.groundToAir.values,
+        gnmUsed,
+        windUsedKt,
+      );
+
+  const referenceFuel1000Kg = bilinearClamped(
+    EO_DIVERSION_TABLE.fuelTime.anmAxis,
+    EO_DIVERSION_TABLE.fuelTime.altitudeAxisFt,
+    EO_DIVERSION_TABLE.fuelTime.fuel1000KgValues,
+    anm,
+    altitudeUsedFt,
+  );
+  const timeMinutes = bilinearClamped(
+    EO_DIVERSION_TABLE.fuelTime.anmAxis,
+    EO_DIVERSION_TABLE.fuelTime.altitudeAxisFt,
+    EO_DIVERSION_TABLE.fuelTime.timeMinutesValues,
+    anm,
+    altitudeUsedFt,
+  );
+  const adjustment1000Kg = bilinearClamped(
+    EO_DIVERSION_TABLE.fuelAdjustment.referenceFuelAxis1000Kg,
+    EO_DIVERSION_TABLE.fuelAdjustment.weightAxisT,
+    EO_DIVERSION_TABLE.fuelAdjustment.adjustment1000KgValues,
+    referenceFuel1000Kg,
+    weightUsedT,
+  );
+  const flightFuel1000Kg = (referenceFuel1000Kg + adjustment1000Kg) * (1 + perfAdjust);
+
+  return {
+    anm,
+    referenceFuel1000Kg,
+    adjustment1000Kg,
+    flightFuel1000Kg,
+    flightFuelKg: flightFuel1000Kg * 1000,
+    timeMinutes,
+    usedInputs: {
+      gnm: gnmUsed,
+      windKt: windUsedKt,
+      altitudeFt: altitudeUsedFt,
+      weightT: weightUsedT,
+    },
+    warnings,
   };
 }
 
@@ -2218,8 +2329,6 @@ function bindLrcAltitudeLimits() {
   const tempEl = document.querySelector("#lrc-alt-temp");
   const currentAltEl = document.querySelector("#lrc-alt-current");
   const targetAltEl = document.querySelector("#lrc-alt-target");
-  const driftGnmEl = document.querySelector("#lrc-alt-drift-gnm");
-  const driftWindEl = document.querySelector("#lrc-alt-drift-wind");
   let lastTempSource = "isa-dev";
   isaDevEl.addEventListener("input", () => {
     lastTempSource = "isa-dev";
@@ -2234,8 +2343,6 @@ function bindLrcAltitudeLimits() {
       missingFieldsBanner(out, [
         fieldIsBlank(document.querySelector("#lrc-alt-weight").value) ? "Weight" : "",
         fieldIsBlank(currentAltEl.value) ? "Current Alt/FL" : "",
-        fieldIsBlank(driftGnmEl.value) ? "Engine out Cruise Distance" : "",
-        fieldIsBlank(driftWindEl.value) ? "Driftdown Wind +/-" : "",
       ])
     ) {
       return;
@@ -2255,8 +2362,6 @@ function bindLrcAltitudeLimits() {
       const currentFl = currentAltInput.flightLevel;
       const currentAltitudeFt = currentAltInput.altitudeFt;
       const targetOptimumAltFt = targetAltInput ? targetAltInput.altitudeFt : NaN;
-      const driftGnm = parseNum(driftGnmEl.value);
-      const driftWindKt = parseNum(driftWindEl.value);
       const perfAdjust = getGlobalPerfAdjust();
       const temperaturePair = resolveTemperaturePair({
         isaDeviationRaw: isaDevEl.value,
@@ -2269,10 +2374,6 @@ function bindLrcAltitudeLimits() {
 
       validateLrcFlightLevelRange(currentFl, "Current Alt/FL");
       const limits = evaluateLrcAltitudeLimits(weightT, isaDeviationCInput);
-      const driftLevelOff = evaluateDriftdownLevelOff(weightT, isaDeviationCInput);
-      const driftAnm = driftdownAnmFromGnm(driftGnm, driftWindKt);
-      const driftFuelTime = driftdownFuelAndTime(driftAnm, weightT, perfAdjust);
-      const seLrcCapability = singleEngineLrcCapabilityAltitude(weightT, isaDeviationCInput);
 
       if (!currentAltInput.isThreeDigitFl) {
         currentAltEl.value = formatInputNumber(currentFl, 0);
@@ -2290,6 +2391,7 @@ function bindLrcAltitudeLimits() {
       lastTempSource = temperaturePair.sourceUsed;
 
       const rows = [
+        ...(limits.clampedToIsa10 ? [["__warning__", `Input warning: ISA deviation floored to ISA+${format(limits.isaDeviationCUsed, 0)}`]] : []),
         ["__section__", "Baseline Limits"],
         [
           "ISA Deviation Used",
@@ -2302,22 +2404,6 @@ function bindLrcAltitudeLimits() {
           "LRC Maximum Altitude / Thrust Limited",
           `${format(limits.maxAltFt, 0)} ft (FL${format(limits.maxAltFt / 100, 0)}) / ${limits.thrustLimited ? "Yes" : "No"}`,
         ],
-        [
-          "SE LRC Altitude Capability (100 fpm)",
-          `${format(seLrcCapability.altitudeFt, 0)} ft (FL${format(seLrcCapability.altitudeFt / 100, 0)})`,
-        ],
-        ["__spacer__", ""],
-        ["__section__", "Engine-Out / Driftdown"],
-        ["Driftdown Start Weight", `${format(weightT, 1)} t`],
-        ["Driftdown Level Off Weight", `${format(driftLevelOff.levelOffWeightT, 1)} t`],
-        ["Optimum Driftdown Speed", `${format(driftLevelOff.optimumDriftdownKias, 0)} kt`],
-        [
-          "Driftdown Level Off Altitude",
-          `${format(driftLevelOff.levelOffAltFt, 0)} ft (FL${format(driftLevelOff.levelOffAltFt / 100, 0)})`,
-        ],
-        ["Driftdown Air Distance (ANM)", `${format(driftAnm, 0)} nm`],
-        ["Driftdown + Cruise Fuel", `${format(driftFuelTime.fuelKg, 0)} kg`],
-        ["Driftdown + Cruise Time", `${format(driftFuelTime.timeMinutes, 1)} min (${formatMinutes(driftFuelTime.timeMinutes)})`],
       ];
 
       if (hasTargetOptimum) {
@@ -2353,6 +2439,136 @@ function bindLrcAltitudeLimits() {
     isaDeviationEl: isaDevEl,
     temperatureEl: tempEl,
   });
+  form.dispatchEvent(new Event("submit"));
+}
+
+function bindEngineOut() {
+  const form = document.querySelector("#engine-out-form");
+  const out = document.querySelector("#engine-out-out");
+  if (!form || !out) return;
+
+  const weightEl = document.querySelector("#eo-weight");
+  const isaDevEl = document.querySelector("#eo-isa-dev");
+  const driftGnmEl = document.querySelector("#eo-drift-gnm");
+  const driftWindEl = document.querySelector("#eo-drift-wind");
+  const eoDiversionAltEl = document.querySelector("#eo-div-alt");
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(weightEl.value) ? "Start Weight" : "",
+        fieldIsBlank(isaDevEl.value) ? "ISA Deviation" : "",
+        fieldIsBlank(driftGnmEl.value) ? "Engine out Cruise Distance" : "",
+        fieldIsBlank(driftWindEl.value) ? "Driftdown Wind +/-" : "",
+      ])
+    ) {
+      return;
+    }
+
+    try {
+      const weightInputT = parseNum(weightEl.value);
+      const isaDeviationCInput = parseNum(isaDevEl.value);
+      const driftGnmInput = parseNum(driftGnmEl.value);
+      const driftWindInputKt = parseNum(driftWindEl.value);
+      const perfAdjust = getGlobalPerfAdjust();
+
+      if (!Number.isFinite(weightInputT) || weightInputT <= 0) {
+        throw new Error("Start weight must be > 0 t");
+      }
+      if (!Number.isFinite(isaDeviationCInput)) {
+        throw new Error("ISA deviation is invalid");
+      }
+      if (!Number.isFinite(driftGnmInput)) {
+        throw new Error("Engine out Cruise Distance is invalid");
+      }
+      if (!Number.isFinite(driftWindInputKt)) {
+        throw new Error("Driftdown wind is invalid");
+      }
+
+      const driftdownRanges = getDriftdownRanges();
+      const weightUsedT = clamp(weightInputT, driftdownRanges.minWeightT, driftdownRanges.maxWeightT);
+      const driftGnmUsed = clamp(driftGnmInput, driftdownRanges.minGnm, driftdownRanges.maxGnm);
+      const driftWindUsedKt = clamp(driftWindInputKt, driftdownRanges.minWindKt, driftdownRanges.maxWindKt);
+
+      const warnings = [];
+      if (weightUsedT !== weightInputT) {
+        warnings.push(`Start weight clamped to ${format(weightUsedT, 1)} t`);
+      }
+      if (driftGnmUsed !== driftGnmInput) {
+        warnings.push(`Engine out Cruise Distance clamped to ${format(driftGnmUsed, 0)} NM`);
+      }
+      if (driftWindUsedKt !== driftWindInputKt) {
+        warnings.push(`Driftdown wind clamped to ${format(driftWindUsedKt, 0)} kt`);
+      }
+
+      const driftLevelOff = evaluateDriftdownLevelOff(weightUsedT, isaDeviationCInput);
+      const driftAnm = driftdownAnmFromGnm(driftGnmUsed, driftWindUsedKt);
+      const driftFuelTime = driftdownFuelAndTime(driftAnm, weightUsedT, perfAdjust);
+      const seLrcCapability = singleEngineLrcCapabilityAltitude(weightUsedT, isaDeviationCInput);
+      const eoDiversionAltRaw = eoDiversionAltEl.value.trim();
+      let eoDiversionAltitudeFt = driftLevelOff.levelOffAltFt;
+      let eoDiversionAltitudeSource = "from driftdown level-off";
+      if (eoDiversionAltRaw !== "") {
+        const eoDiversionAltInput = parseAltOrFlInput(eoDiversionAltRaw, "EO LRC Diversion Alt/FL");
+        eoDiversionAltitudeFt = eoDiversionAltInput.altitudeFt;
+        eoDiversionAltitudeSource = "nominated";
+        if (eoDiversionAltInput.isThreeDigitFl) {
+          eoDiversionAltEl.value = formatInputNumber(eoDiversionAltInput.altitudeFt, 0);
+        }
+      }
+      const eoDiversion = eoDiversionFuelTime(
+        driftGnmInput,
+        driftWindInputKt,
+        eoDiversionAltitudeFt,
+        weightUsedT,
+        perfAdjust,
+      );
+      if (driftLevelOff.clampedToIsa10) {
+        warnings.push(`ISA deviation floored to ISA+${format(driftLevelOff.isaDeviationCUsed, 0)}`);
+      }
+      warnings.push(...eoDiversion.warnings);
+      const uniqueWarnings = [...new Set(warnings)];
+
+      renderRows(out, [
+        ...(uniqueWarnings.length ? [["__warning__", `Input warning: ${uniqueWarnings.join(" | ")}`]] : []),
+        [
+          "ISA Deviation Used",
+          driftLevelOff.clampedToIsa10
+            ? `ISA+${format(driftLevelOff.isaDeviationCUsed, 0)} (input ISA+${format(isaDeviationCInput, 1)})`
+            : `ISA+${format(driftLevelOff.isaDeviationCUsed, 1)}`,
+        ],
+        [
+          "SE LRC Altitude Capability (100 fpm)",
+          `${format(seLrcCapability.altitudeFt, 0)} ft (FL${format(seLrcCapability.altitudeFt / 100, 0)})`,
+        ],
+        ["Driftdown Start Weight", `${format(weightUsedT, 1)} t`],
+        ["Driftdown Level Off Weight", `${format(driftLevelOff.levelOffWeightT, 1)} t`],
+        ["Optimum Driftdown Speed", `${format(driftLevelOff.optimumDriftdownKias, 0)} kt`],
+        [
+          "Driftdown Level Off Altitude",
+          `${format(driftLevelOff.levelOffAltFt, 0)} ft (FL${format(driftLevelOff.levelOffAltFt / 100, 0)})`,
+        ],
+        ["Driftdown Air Distance (ANM)", `${format(driftAnm, 0)} nm`],
+        ["Driftdown + Cruise Fuel", `${format(driftFuelTime.fuelKg, 0)} kg`],
+        ["Driftdown + Cruise Time", `${format(driftFuelTime.timeMinutes, 1)} min (${formatMinutes(driftFuelTime.timeMinutes)})`],
+        ["__spacer__", ""],
+        ["__section__", "EO LRC Diversion"],
+        [
+          "EO Diversion Altitude Used",
+          `${format(eoDiversion.usedInputs.altitudeFt, 0)} ft (${eoDiversionAltitudeSource})`,
+        ],
+        ["EO Diversion Air Distance (ANM)", `${format(eoDiversion.anm, 0)} nm`],
+        ["EO Diversion Reference Fuel", `${format(eoDiversion.referenceFuel1000Kg * 1000, 0)} kg`],
+        ["EO Diversion Weight Adjustment", `${format(eoDiversion.adjustment1000Kg * 1000, 0)} kg`],
+        ["EO Diversion Flight Fuel", `${format(eoDiversion.flightFuelKg, 0)} kg`],
+        ["EO Diversion Time", `${format(eoDiversion.timeMinutes, 1)} min (${formatMinutes(eoDiversion.timeMinutes)})`],
+      ]);
+    } catch (error) {
+      renderError(out, error.message);
+    }
+  });
+
   form.dispatchEvent(new Event("submit"));
 }
 
@@ -3028,6 +3244,7 @@ function bindGlobalSettings() {
       "#short-trip-form",
       "#long-range-form",
       "#lrc-altitude-form",
+      "#engine-out-form",
       "#diversion-form",
       "#holding-form",
       "#lose-time-form",
@@ -3077,14 +3294,20 @@ function setAltFlRangeLabels() {
     );
   }
 
-  const driftdownRanges = getDriftdownRanges();
-  if (Number.isFinite(driftdownRanges.minGnm) && Number.isFinite(driftdownRanges.maxGnm)) {
-    setRangeText("#lrc-alt-drift-gnm-range", `(${format(driftdownRanges.minGnm, 0)}-${format(driftdownRanges.maxGnm, 0)})`);
+  const eoDiversionRanges = getEoDiversionRanges();
+  if (Number.isFinite(eoDiversionRanges.minGnm) && Number.isFinite(eoDiversionRanges.maxGnm)) {
+    setRangeText("#eo-drift-gnm-range", `(${format(eoDiversionRanges.minGnm, 0)}-${format(eoDiversionRanges.maxGnm, 0)})`);
   }
-  if (Number.isFinite(driftdownRanges.minWindKt) && Number.isFinite(driftdownRanges.maxWindKt)) {
+  if (Number.isFinite(eoDiversionRanges.minWindKt) && Number.isFinite(eoDiversionRanges.maxWindKt)) {
     setRangeText(
-      "#lrc-alt-drift-wind-range",
-      `(${format(driftdownRanges.minWindKt, 0)} to +${format(driftdownRanges.maxWindKt, 0)})`,
+      "#eo-drift-wind-range",
+      `(${format(eoDiversionRanges.minWindKt, 0)} to +${format(eoDiversionRanges.maxWindKt, 0)})`,
+    );
+  }
+  if (Number.isFinite(eoDiversionRanges.minAltitudeFt) && Number.isFinite(eoDiversionRanges.maxAltitudeFt)) {
+    setRangeText(
+      "#eo-div-alt-range",
+      formatFlRange(eoDiversionRanges.minAltitudeFt / 100, eoDiversionRanges.maxAltitudeFt / 100),
     );
   }
 
@@ -3141,6 +3364,7 @@ setAltFlRangeLabels();
 bindShortTrip();
 bindLongRange();
 bindLrcAltitudeLimits();
+bindEngineOut();
 bindDiversion();
 bindGoAround();
 bindHolding();

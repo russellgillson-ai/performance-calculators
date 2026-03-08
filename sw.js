@@ -1,4 +1,4 @@
-const CACHE_NAME = "performance-calculators-v7";
+const CACHE_NAME = "performance-calculators-v8";
 const APP_SHELL_ASSETS = [
   "./",
   "./index.html",
@@ -8,6 +8,7 @@ const APP_SHELL_ASSETS = [
   "./lrc_data.js",
   "./lrc_altitude_limits_data.js",
   "./driftdown_data.js",
+  "./eo_diversion_data.js",
   "./flaps_up_data.js",
   "./diversion_data.js",
   "./go_around_data.js",
