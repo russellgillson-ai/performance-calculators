@@ -7,6 +7,7 @@ const DIVERSION_LRC_TABLE = window.DIVERSION_LRC_TABLE;
 const GO_AROUND_TABLE = window.GO_AROUND_TABLE;
 
 const { shortTripAnm, longRangeAnm, longRangeFuel: longRangeFuelTable, shortTripFuelAlt } = TABLE_DATA;
+const APP_VERSION = "v7.0.0";
 
 const R_AIR = 287.05287;
 const GAMMA = 1.4;
@@ -220,6 +221,12 @@ function format(value, digits = 2) {
     minimumFractionDigits: 0,
     maximumFractionDigits: digits,
   });
+}
+
+function formatInputNumber(value, digits = 0) {
+  if (!Number.isFinite(value)) return "";
+  const fixed = Number(value).toFixed(Math.max(0, digits));
+  return fixed.replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
 }
 
 function formatMinutes(minutes) {
@@ -726,6 +733,12 @@ function lookupGoAroundAntiIceAdjustment(_config, antiIceMode, oatC) {
   return 0;
 }
 
+function getGoAroundAntiIceBand(oatC) {
+  if (oatC <= 8) return "OAT <= 8°C";
+  if (oatC <= 20) return "8°C < OAT <= 20°C";
+  return "OAT > 20°C";
+}
+
 function calculateGoAroundGradient({
   flapSelection,
   oatCInput,
@@ -755,14 +768,23 @@ function calculateGoAroundGradient({
   const referenceGradientPct = lookupGoAroundReferenceGradient(config, oatC, elevationFt);
   const speedAdjustmentPct = lookupGoAroundSpeedAdjustment(config, speedLabel, referenceGradientPct);
   const antiIceAdjustmentPct = lookupGoAroundAntiIceAdjustment(config, antiIceMode, oatC);
+  const antiIceBand = getGoAroundAntiIceBand(oatC);
   const icingPenaltyPct = applyIcingPenalty ? -config.icingPenaltyPct : 0;
   const baseGradientWithoutWeightPct = referenceGradientPct + speedAdjustmentPct + antiIceAdjustmentPct + icingPenaltyPct;
+  const warnings = [];
+  if (oatC !== oatCInput) {
+    warnings.push(`OAT clamped to ${format(oatC, 1)}°C`);
+  }
+  if (elevationFt !== elevationFtInput) {
+    warnings.push(`Airport elevation clamped to ${format(elevationFt, 0)} ft`);
+  }
 
   let landingWeightT;
   let weightAdjustmentPct;
   let mode;
 
   if (hasTargetGradientInput) {
+    const profile = buildGoAroundWeightAdjustmentProfile(config, referenceGradientPct);
     const solution = solveGoAroundWeightForTargetGradient({
       config,
       referenceGradientPct,
@@ -772,10 +794,34 @@ function calculateGoAroundGradient({
     landingWeightT = solution.landingWeightT;
     weightAdjustmentPct = solution.appliedWeightAdjustmentPct;
     mode = "target";
+    const finalAtMinWeight =
+      baseGradientWithoutWeightPct +
+      linearClamped(
+        profile.weightAxis,
+        profile.adjustmentByWeightPct,
+        config.weightAdjustment.weightAxisT[0],
+      );
+    const finalAtMaxWeight =
+      baseGradientWithoutWeightPct +
+      linearClamped(
+        profile.weightAxis,
+        profile.adjustmentByWeightPct,
+        config.weightAdjustment.weightAxisT[config.weightAdjustment.weightAxisT.length - 1],
+      );
+    const minFinal = Math.min(finalAtMinWeight, finalAtMaxWeight);
+    const maxFinal = Math.max(finalAtMinWeight, finalAtMaxWeight);
+    if (targetGradientPctInput < minFinal || targetGradientPctInput > maxFinal) {
+      warnings.push(
+        `Target gradient out of achievable range (${format(minFinal, 1)}% to ${format(maxFinal, 1)}%); required weight clamped`,
+      );
+    }
   } else {
     landingWeightT = clampToAxis(config.weightAdjustment.weightAxisT, landingWeightTInput);
     weightAdjustmentPct = lookupGoAroundWeightAdjustment(config, landingWeightT, referenceGradientPct);
     mode = "weight";
+    if (landingWeightT !== landingWeightTInput) {
+      warnings.push(`Landing weight clamped to ${format(landingWeightT, 1)} t`);
+    }
   }
 
   const finalGradientPct =
@@ -796,8 +842,10 @@ function calculateGoAroundGradient({
     weightAdjustmentPct,
     speedAdjustmentPct,
     antiIceAdjustmentPct,
+    antiIceBand,
     icingPenaltyPct,
     finalGradientPct,
+    warnings,
   };
 }
 
@@ -919,15 +967,41 @@ function diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, additional
   }
 
   const hasBands = DIVERSION_LRC_TABLE.low && DIVERSION_LRC_TABLE.high;
+  const baseBand = hasBands ? DIVERSION_LRC_TABLE.low : DIVERSION_LRC_TABLE;
+  const gnmAxis = baseBand.groundToAir.gnmAxis;
+  const windAxis = baseBand.groundToAir.windAxis;
+  const gnmUsed = clampToAxis(gnmAxis, gnm);
+  const windUsed = clampToAxis(windAxis, wind);
+  const weightAxis = baseBand.fuelAdjustment.weightAxisT;
+  const weightUsed = clampToAxis(weightAxis, weightT);
+  const altitudeMinFt = hasBands
+    ? Math.min(
+        DIVERSION_LRC_TABLE.low.fuelTime.altitudeAxisFt[0],
+        DIVERSION_LRC_TABLE.high.fuelTime.altitudeAxisFt[0],
+      )
+    : baseBand.fuelTime.altitudeAxisFt[0];
+  const altitudeMaxFt = hasBands
+    ? Math.max(
+        DIVERSION_LRC_TABLE.low.fuelTime.altitudeAxisFt[DIVERSION_LRC_TABLE.low.fuelTime.altitudeAxisFt.length - 1],
+        DIVERSION_LRC_TABLE.high.fuelTime.altitudeAxisFt[DIVERSION_LRC_TABLE.high.fuelTime.altitudeAxisFt.length - 1],
+      )
+    : baseBand.fuelTime.altitudeAxisFt[baseBand.fuelTime.altitudeAxisFt.length - 1];
+  const altitudeUsed = clamp(altitudeFt, altitudeMinFt, altitudeMaxFt);
+  const warnings = [];
+  if (gnmUsed !== gnm) warnings.push(`Ground distance clamped to ${format(gnmUsed, 0)} NM`);
+  if (windUsed !== wind) warnings.push(`Wind clamped to ${format(windUsed, 0)} kt`);
+  if (altitudeUsed !== altitudeFt) warnings.push(`Altitude clamped to ${format(altitudeUsed, 0)} ft`);
+  if (weightUsed !== weightT) warnings.push(`Start weight clamped to ${format(weightUsed, 1)} t`);
+
   const evaluateBand = (tableSet) => {
-    const anm = Math.abs(wind) < 1e-9
-      ? clampToAxis(tableSet.groundToAir.gnmAxis, gnm)
+    const anm = Math.abs(windUsed) < 1e-9
+      ? gnmUsed
       : bilinearClamped(
           tableSet.groundToAir.gnmAxis,
           tableSet.groundToAir.windAxis,
           tableSet.groundToAir.values,
-          gnm,
-          wind,
+          gnmUsed,
+          windUsed,
         );
 
     const referenceFuel1000Kg = bilinearClamped(
@@ -935,21 +1009,21 @@ function diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, additional
       tableSet.fuelTime.altitudeAxisFt,
       tableSet.fuelTime.fuel1000KgValues,
       anm,
-      altitudeFt,
+      altitudeUsed,
     );
     const timeMinutes = bilinearClamped(
       tableSet.fuelTime.anmAxis,
       tableSet.fuelTime.altitudeAxisFt,
       tableSet.fuelTime.timeMinutesValues,
       anm,
-      altitudeFt,
+      altitudeUsed,
     );
     const adjustment1000Kg = bilinearClamped(
       tableSet.fuelAdjustment.referenceFuelAxis1000Kg,
       tableSet.fuelAdjustment.weightAxisT,
       tableSet.fuelAdjustment.adjustment1000KgValues,
       referenceFuel1000Kg,
-      weightT,
+      weightUsed,
     );
 
     return {
@@ -991,7 +1065,7 @@ function diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, additional
   const adjustedFuelBeforePerf1000Kg = referenceFuel1000Kg + adjustment1000Kg;
   const adjustedFuel1000Kg = adjustedFuelBeforePerf1000Kg * (1 + perfAdjust);
   const adjustedFuelKg = adjustedFuel1000Kg * 1000;
-  const reserveCalcWeightT = weightT - adjustedFuelKg / 1000 - FIXED_ALLOWANCE_KG / 1000;
+  const reserveCalcWeightT = weightUsed - adjustedFuelKg / 1000 - FIXED_ALLOWANCE_KG / 1000;
   if (!Number.isFinite(reserveCalcWeightT) || reserveCalcWeightT <= 0) {
     throw new Error("Computed reserve-calculation weight is invalid (check start weight/fuel)");
   }
@@ -1016,6 +1090,13 @@ function diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, additional
     fixedAllowanceKg: fuelBuildUp.fixedAllowanceKg,
     totalFuelKg: fuelBuildUp.totalFuelKg,
     timeMinutes,
+    warnings,
+    usedInputs: {
+      gnm: gnmUsed,
+      wind: windUsed,
+      altitudeFt: altitudeUsed,
+      weightT: weightUsed,
+    },
   };
 }
 
@@ -2010,6 +2091,9 @@ function renderRows(target, rows) {
       if (k === "__section__") {
         return `<div class="result-section-title">${v}</div>`;
       }
+      if (k === "__warning__") {
+        return `<div class="result-warning">${v}</div>`;
+      }
       return `<div class="result-row"><span class="result-key">${k}</span><span class="result-value">${v}</span></div>`;
     })
     .join("");
@@ -2019,12 +2103,38 @@ function renderError(target, message) {
   target.innerHTML = `<div class="error">${message}</div>`;
 }
 
+function renderValidation(target, message) {
+  target.innerHTML = `<div class="validation">${message}</div>`;
+}
+
+function missingFieldsBanner(target, missingNames) {
+  const names = missingNames.filter(Boolean);
+  if (names.length === 0) return false;
+  const plural = names.length > 1 ? "s" : "";
+  renderValidation(target, `Missing required input${plural}: ${names.join(", ")}`);
+  return true;
+}
+
+function fieldIsBlank(value) {
+  return String(value ?? "").trim() === "";
+}
+
 function bindShortTrip() {
   const form = document.querySelector("#short-trip-form");
   const out = document.querySelector("#short-trip-out");
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(document.querySelector("#st-gnm").value) ? "Ground Distance (GNM)" : "",
+        fieldIsBlank(document.querySelector("#st-wind").value) ? "Wind +/-" : "",
+        fieldIsBlank(document.querySelector("#st-weight").value) ? "Landing Weight" : "",
+        fieldIsBlank(document.querySelector("#st-hold-min").value) ? "Additional Holding Fuel (min)" : "",
+      ])
+    ) {
+      return;
+    }
     try {
       const gnm = parseNum(document.querySelector("#st-gnm").value);
       const wind = parseNum(document.querySelector("#st-wind").value);
@@ -2060,6 +2170,16 @@ function bindLongRange() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(document.querySelector("#lr-gnm").value) ? "Ground Distance (GNM)" : "",
+        fieldIsBlank(document.querySelector("#lr-wind").value) ? "Wind +/-" : "",
+        fieldIsBlank(document.querySelector("#lr-weight").value) ? "Landing Weight" : "",
+        fieldIsBlank(document.querySelector("#lr-hold-min").value) ? "Additional Holding Fuel (min)" : "",
+      ])
+    ) {
+      return;
+    }
     try {
       const gnm = parseNum(document.querySelector("#lr-gnm").value);
       const wind = parseNum(document.querySelector("#lr-wind").value);
@@ -2110,6 +2230,20 @@ function bindLrcAltitudeLimits() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(document.querySelector("#lrc-alt-weight").value) ? "Weight" : "",
+        fieldIsBlank(currentAltEl.value) ? "Current Alt/FL" : "",
+        fieldIsBlank(driftGnmEl.value) ? "Engine out Cruise Distance" : "",
+        fieldIsBlank(driftWindEl.value) ? "Driftdown Wind +/-" : "",
+      ])
+    ) {
+      return;
+    }
+    if (fieldIsBlank(isaDevEl.value) && fieldIsBlank(tempEl.value)) {
+      renderValidation(out, "Missing required input: ISA Deviation or Temperature");
+      return;
+    }
     try {
       const weightT = parseNum(document.querySelector("#lrc-alt-weight").value);
       const currentAltInput = parseAltOrFlInput(currentAltEl.value, "Current Alt/FL");
@@ -2141,13 +2275,13 @@ function bindLrcAltitudeLimits() {
       const seLrcCapability = singleEngineLrcCapabilityAltitude(weightT, isaDeviationCInput);
 
       if (!currentAltInput.isThreeDigitFl) {
-        currentAltEl.value = format(currentFl, 0);
+        currentAltEl.value = formatInputNumber(currentFl, 0);
       }
       if (targetAltInput && targetAltInput.isThreeDigitFl) {
-        targetAltEl.value = format(targetOptimumAltFt, 0);
+        targetAltEl.value = formatInputNumber(targetOptimumAltFt, 0);
       }
-      isaDevEl.value = format(temperaturePair.isaDeviationC, 1);
-      tempEl.value = format(temperaturePair.temperatureC, 1);
+      isaDevEl.value = formatInputNumber(temperaturePair.isaDeviationC, 1);
+      tempEl.value = formatInputNumber(temperaturePair.temperatureC, 1);
       applyTemperatureFieldStyle({
         sourceUsed: temperaturePair.sourceUsed,
         isaDeviationEl: isaDevEl,
@@ -2229,6 +2363,17 @@ function bindDiversion() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(document.querySelector("#div-gnm").value) ? "Ground Distance (GNM)" : "",
+        fieldIsBlank(document.querySelector("#div-wind").value) ? "Wind +/-" : "",
+        fieldIsBlank(document.querySelector("#div-alt").value) ? "Alt/FL" : "",
+        fieldIsBlank(document.querySelector("#div-weight").value) ? "Start Weight" : "",
+        fieldIsBlank(document.querySelector("#div-hold-min").value) ? "Additional Holding Fuel (min)" : "",
+      ])
+    ) {
+      return;
+    }
     try {
       const gnm = parseNum(document.querySelector("#div-gnm").value);
       const wind = parseNum(document.querySelector("#div-wind").value);
@@ -2239,11 +2384,12 @@ function bindDiversion() {
       const holdingMin = parseNum(document.querySelector("#div-hold-min").value);
       const perfAdjust = getGlobalPerfAdjust();
       if (divAltInput.isThreeDigitFl) {
-        divAltEl.value = format(altitudeFt, 0);
+        divAltEl.value = formatInputNumber(altitudeFt, 0);
       }
 
       const result = diversionLrcFuel(gnm, wind, altitudeFt, weightT, perfAdjust, holdingMin);
       const rows = [
+        ...(result.warnings.length ? [["__warning__", `Input warning: ${result.warnings.join(" | ")}`]] : []),
         ["Flight Fuel", `${format(result.adjustedFuel1000Kg * 1000, 0)} kg`],
         ["Est Landing Weight", `${format(result.reserveCalcWeightT, 1)} t`],
         ["FRF (30 min hold @ 1500 ft)", `${format(result.frfKg, 0)} kg`],
@@ -2295,6 +2441,28 @@ function bindHolding() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    const totalHoldRaw = String(totalHoldEl.value || "").trim();
+    const inboundLegRaw = String(inboundLegEl.value || "").trim();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(document.querySelector("#hold-weight").value) ? "Weight" : "",
+        fieldIsBlank(document.querySelector("#hold-alt").value) ? "Alt/FL" : "",
+        fieldIsBlank(document.querySelector("#fuel-available").value) ? "Fuel Available" : "",
+        fieldIsBlank(document.querySelector("#hold-inbound-course").value) ? "Inbound Course" : "",
+        fieldIsBlank(document.querySelector("#hold-wind-dir").value) ? "Wind Direction" : "",
+        fieldIsBlank(document.querySelector("#hold-wind-speed").value) ? "Wind Speed" : "",
+      ])
+    ) {
+      return;
+    }
+    if (totalHoldRaw === "" && inboundLegRaw === "") {
+      renderValidation(out, "Missing required input: Total Hold Required or Inbound Leg Time");
+      return;
+    }
+    if (fieldIsBlank(timingIsaDevEl.value) && fieldIsBlank(timingTempEl.value)) {
+      renderValidation(out, "Missing required input: ISA Deviation or Temperature");
+      return;
+    }
     try {
       const weight = parseNum(document.querySelector("#hold-weight").value);
       const holdAltEl = document.querySelector("#hold-alt");
@@ -2302,8 +2470,6 @@ function bindHolding() {
       const altitude = holdAltInput.altitudeFt;
       const fuelAvailable = parseNum(document.querySelector("#fuel-available").value);
       const perfAdjust = getGlobalPerfAdjust();
-      const totalHoldRaw = String(totalHoldEl.value || "").trim();
-      const inboundLegRaw = String(inboundLegEl.value || "").trim();
       const holdSide = String(document.querySelector("#hold-side").value || "R").toUpperCase();
       const inboundCourseDeg = parseNum(document.querySelector("#hold-inbound-course").value);
       const windFromDeg = parseNum(document.querySelector("#hold-wind-dir").value);
@@ -2320,10 +2486,10 @@ function bindHolding() {
       const timingIsaDevC = temperaturePair.isaDeviationC;
 
       if (holdAltInput.isThreeDigitFl) {
-        holdAltEl.value = format(altitude, 0);
+        holdAltEl.value = formatInputNumber(altitude, 0);
       }
-      timingIsaDevEl.value = format(temperaturePair.isaDeviationC, 1);
-      timingTempEl.value = format(temperaturePair.temperatureC, 1);
+      timingIsaDevEl.value = formatInputNumber(temperaturePair.isaDeviationC, 1);
+      timingTempEl.value = formatInputNumber(temperaturePair.temperatureC, 1);
       applyTemperatureFieldStyle({
         sourceUsed: temperaturePair.sourceUsed,
         isaDeviationEl: timingIsaDevEl,
@@ -2485,6 +2651,27 @@ function bindLoseTime() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(document.querySelector("#lt-distance").value) ? "Distance to Fix" : "",
+        fieldIsBlank(document.querySelector("#lt-weight").value) ? "Current Weight" : "",
+        fieldIsBlank(document.querySelector("#lt-fl").value) ? "Current Alt/FL" : "",
+        fieldIsBlank(document.querySelector("#lt-delay").value) ? "Required Delay" : "",
+        fieldIsBlank(document.querySelector("#lt-wind").value) ? "Wind" : "",
+      ])
+    ) {
+      return;
+    }
+    if (levelModeEl.value !== "none") {
+      if (
+        missingFieldsBanner(out, [
+          fieldIsBlank(changeAfterEl.value) ? "Change After (min)" : "",
+          fieldIsBlank(newFlEl.value) ? "New Alt/FL" : "",
+        ])
+      ) {
+        return;
+      }
+    }
 
     try {
       const distanceNm = parseNum(document.querySelector("#lt-distance").value);
@@ -2506,12 +2693,12 @@ function bindLoseTime() {
       }
 
       if (!startFlInput.isThreeDigitFl) {
-        startFlEl.value = format(startFl, 0);
+        startFlEl.value = formatInputNumber(startFl, 0);
       }
       if (levelChangeMode !== "none") {
         const newFlInput = parseAltOrFlInput(newFlEl.value, "New Alt/FL");
         if (!newFlInput.isThreeDigitFl) {
-          newFlEl.value = format(newFl, 0);
+          newFlEl.value = formatInputNumber(newFl, 0);
         }
       }
 
@@ -2613,10 +2800,29 @@ function bindConversion() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    const mode = modeEl.value;
+    if (fieldIsBlank(flEl.value)) {
+      renderValidation(out, "Missing required input: Alt/FL");
+      return;
+    }
+    if (fieldIsBlank(isaDevEl.value) && fieldIsBlank(oatEl.value)) {
+      renderValidation(out, "Missing required input: ISA Deviation or Temperature");
+      return;
+    }
+    if (
+      (mode === "ias" && fieldIsBlank(iasEl.value)) ||
+      (mode === "mach" && fieldIsBlank(machEl.value)) ||
+      (mode === "tas" && fieldIsBlank(tasEl.value))
+    ) {
+      renderValidation(
+        out,
+        `Missing required input: ${mode === "ias" ? "IAS" : mode === "mach" ? "Mach" : "TAS"}`,
+      );
+      return;
+    }
     try {
       const flInput = parseAltOrFlInput(flEl.value, "Alt/FL");
       const fl = flInput.flightLevel;
-      const mode = modeEl.value;
       const pressureAltitudeFt = fl * 100;
       const temperaturePair = resolveTemperaturePair({
         isaDeviationRaw: isaDevEl.value,
@@ -2626,8 +2832,8 @@ function bindConversion() {
         label: "IAS/Mach/TAS temperature",
       });
       lastTempSource = temperaturePair.sourceUsed;
-      isaDevEl.value = format(temperaturePair.isaDeviationC, 1);
-      oatEl.value = format(temperaturePair.temperatureC, 1);
+      isaDevEl.value = formatInputNumber(temperaturePair.isaDeviationC, 1);
+      oatEl.value = formatInputNumber(temperaturePair.temperatureC, 1);
       applyTemperatureFieldStyle({
         sourceUsed: temperaturePair.sourceUsed,
         isaDeviationEl: isaDevEl,
@@ -2635,7 +2841,7 @@ function bindConversion() {
       });
 
       if (!flInput.isThreeDigitFl) {
-        flEl.value = format(fl, 0);
+        flEl.value = formatInputNumber(fl, 0);
       }
       const atmosphere = atmosphereFromPressureAltitude({
         pressureAltitudeFt,
@@ -2748,14 +2954,28 @@ function bindGoAround() {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (
+      missingFieldsBanner(out, [
+        fieldIsBlank(oatEl.value) ? "OAT" : "",
+        fieldIsBlank(elevationEl.value) ? "Airport Elevation" : "",
+      ])
+    ) {
+      return;
+    }
+    if (fieldIsBlank(weightEl.value) && fieldIsBlank(targetGradientEl.value)) {
+      renderValidation(out, "Missing required input: Landing Weight or Target Gradient");
+      return;
+    }
     try {
+      const oatText = oatEl.value.trim();
+      const elevationText = elevationEl.value.trim();
       const weightText = weightEl.value.trim();
       const targetText = targetGradientEl.value.trim();
 
       const result = calculateGoAroundGradient({
         flapSelection: flapEl.value,
-        oatCInput: parseNum(oatEl.value),
-        elevationFtInput: parseNum(elevationEl.value),
+        oatCInput: oatText === "" ? NaN : parseNum(oatText),
+        elevationFtInput: elevationText === "" ? NaN : parseNum(elevationText),
         landingWeightTInput: weightText === "" ? NaN : parseNum(weightText),
         targetGradientPctInput: targetText === "" ? NaN : parseNum(targetText),
         speedLabel: speedEl.value,
@@ -2763,16 +2983,19 @@ function bindGoAround() {
         applyIcingPenalty: icingPenaltyEl.value === "on",
       });
 
-      oatEl.value = format(result.inputsUsed.oatC, 1);
-      elevationEl.value = format(result.inputsUsed.elevationFt, 0);
+      oatEl.value = formatInputNumber(result.inputsUsed.oatC, 1);
+      elevationEl.value = formatInputNumber(result.inputsUsed.elevationFt, 0);
       if (result.mode === "weight") {
-        weightEl.value = format(result.inputsUsed.landingWeightT, 1);
+        weightEl.value = formatInputNumber(result.inputsUsed.landingWeightT, 1);
       } else {
-        targetGradientEl.value = format(result.targetGradientPct, 1);
+        targetGradientEl.value = formatInputNumber(result.targetGradientPct, 1);
       }
 
       const rows = [
+        ...(result.warnings.length ? [["__warning__", `Input warning: ${result.warnings.join(" | ")}`]] : []),
         ["Flap / Speed", `${result.flapLabel} / ${result.inputsUsed.speedLabel}`],
+        ["OAT / Airport Elevation Used", `${format(result.inputsUsed.oatC, 1)} °C / ${format(result.inputsUsed.elevationFt, 0)} ft`],
+        ["Anti-Ice Band Applied", result.antiIceBand],
         ...(result.mode === "target"
           ? [
               ["Target Gradient", `${format(result.targetGradientPct, 1)} %`],
@@ -2906,6 +3129,14 @@ function registerServiceWorker() {
     .catch(() => {});
 }
 
+function setAppVersionLabel() {
+  const versionEl = document.querySelector("#app-version");
+  if (versionEl) {
+    versionEl.textContent = `Version ${APP_VERSION}`;
+  }
+}
+
+setAppVersionLabel();
 setAltFlRangeLabels();
 bindShortTrip();
 bindLongRange();

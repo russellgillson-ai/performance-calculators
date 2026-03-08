@@ -17,6 +17,7 @@
     <main class="layout">
       <header class="hero">
         <h1>Performance Calculators</h1>
+        <p class="app-version" id="app-version">Version v7.0.0</p>
       </header>
 
       <section class="panel" aria-labelledby="global-settings-heading">
@@ -31,6 +32,7 @@
 
       <section class="panel" aria-labelledby="short-trip-heading">
         <h2 id="short-trip-heading">Short Trip Fuel</h2>
+        <p class="module-assumptions">Assumptions: Table interpolation; contingency is 5% with min/max limits; FRF is 30 min hold at 1500 ft.</p>
         <form id="short-trip-form" class="grid">
           <label>
             Ground Distance (GNM)
@@ -56,6 +58,7 @@
       <section class="panel" aria-labelledby="long-range-heading">
         <h2 id="long-range-heading">LRC Trip Fuel</h2>
         <p class="module-note">310/.85 climb, Long Range Cruise speed and .85/310/250 descent</p>
+        <p class="module-assumptions">Assumptions: LRC table interpolation; contingency and FRF logic as configured; global performance adjustment applies.</p>
         <form id="long-range-form" class="grid">
           <label>
             Ground Distance (GNM)
@@ -80,6 +83,7 @@
 
       <section class="panel" aria-labelledby="lrc-altitude-heading">
         <h2 id="lrc-altitude-heading">LRC Altitude Limits</h2>
+        <p class="module-assumptions">Assumptions: Weight/temperature interpolation from provided limits data; ISA below table minimum is floored per table rules.</p>
         <form id="lrc-altitude-form" class="grid">
           <label>
             Weight (t)
@@ -118,6 +122,7 @@
       <section class="panel" aria-labelledby="diversion-heading">
         <h2 id="diversion-heading">Diversion (LRC)</h2>
         <p class="module-note">LRC - Descent .85/310/250</p>
+        <p class="module-assumptions">Assumptions: GNM to ANM and fuel/time interpolation from diversion tables; 0 wind gives ANM = GNM.</p>
         <form id="diversion-form" class="grid">
           <label>
             Ground Distance (GNM)
@@ -146,6 +151,7 @@
 
       <section class="panel" aria-labelledby="go-around-heading">
         <h2 id="go-around-heading">Go-Around Climb Gradient</h2>
+        <p class="module-assumptions">Assumptions: Reference, weight and speed adjustments are table-driven with edge clamping and interpolation.</p>
         <form id="go-around-form" class="grid">
           <label>
             Flap
@@ -196,6 +202,7 @@
 
       <section class="panel" aria-labelledby="holding-heading">
         <h2 id="holding-heading">Holding + Endurance</h2>
+        <p class="module-assumptions">Assumptions: Steady-state holding geometry, wind-corrected tracks, and hold fuel flow from the hold performance table.</p>
         <form id="holding-form" class="grid">
           <label>
             Weight (t)
@@ -259,6 +266,7 @@
 
       <section class="panel" aria-labelledby="lose-time-heading">
         <h2 id="lose-time-heading">Lose Time Strategy Comparison</h2>
+        <p class="module-assumptions">Assumptions: Time-step simulation with weight decay and LRC/hold interpolation at selected altitude and wind.</p>
         <form id="lose-time-form" class="grid">
           <label>
             Distance to Fix (NM)
@@ -303,6 +311,7 @@
 
       <section class="panel" aria-labelledby="conversion-heading">
         <h2 id="conversion-heading">IAS / Mach / TAS (ISA model)</h2>
+        <p class="module-assumptions">Assumptions: ISA atmosphere with compressible-flow CAS/IAS relations using entered Alt/FL and temperature.</p>
         <form id="conversion-form" class="grid">
           <label>
             Input Mode
