@@ -462,6 +462,116 @@ function weightForNominatedOptimumAltitude(targetOptimumAltFt, isaDeviationCUsed
   return weightAxis[0];
 }
 
+function simulateStepClimbFuelToTargetWeight({
+  startWeightT,
+  targetWeightT,
+  startFlightLevel,
+  targetOptimumAltFt,
+  isaDeviationCUsed,
+  perfAdjust,
+}) {
+  if (!Number.isFinite(startWeightT) || !Number.isFinite(targetWeightT)) {
+    throw new Error("Weight input is invalid for step-climb simulation");
+  }
+  if (!Number.isFinite(startFlightLevel) || startFlightLevel <= 0) {
+    throw new Error("Current Alt/FL is invalid for step-climb simulation");
+  }
+  if (!Number.isFinite(targetOptimumAltFt) || targetOptimumAltFt <= 0) {
+    throw new Error("New Optimum Altitude is invalid for step-climb simulation");
+  }
+  const cruiseWeightAxis = (LRC_CRUISE_TABLE?.records || [])
+    .map((record) => record.weightT)
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  const minCruiseWeightT = cruiseWeightAxis[0];
+  const maxCruiseWeightT = cruiseWeightAxis[cruiseWeightAxis.length - 1];
+  if (!Number.isFinite(minCruiseWeightT) || !Number.isFinite(maxCruiseWeightT)) {
+    throw new Error("LRC cruise weight axis is unavailable");
+  }
+  if (startWeightT < minCruiseWeightT || startWeightT > maxCruiseWeightT) {
+    throw new Error(`Current weight out of range for LRC fuel-flow lookup (${format(minCruiseWeightT, 1)}-${format(maxCruiseWeightT, 1)} t)`);
+  }
+
+  const startAltitudeFt = startFlightLevel * 100;
+  const burnRequiredKg = Math.max(0, (startWeightT - targetWeightT) * 1000);
+  const transitions = [];
+  const firstStepAltitudeFt = Math.floor(startAltitudeFt / 1000) * 1000 + 1000;
+  const maxStepAltitudeFt = Math.floor(targetOptimumAltFt / 1000) * 1000;
+  for (let stepAltitudeFt = firstStepAltitudeFt; stepAltitudeFt <= maxStepAltitudeFt; stepAltitudeFt += 1000) {
+    transitions.push({
+      altitudeFt: stepAltitudeFt,
+      thresholdWeightT: weightForNominatedOptimumAltitude(stepAltitudeFt, isaDeviationCUsed),
+    });
+  }
+
+  let currentWeightT = startWeightT;
+  let currentAltitudeFt = startAltitudeFt;
+  let transitionIndex = 0;
+  const stepClimbs = [];
+  const applyEligibleClimbs = () => {
+    while (
+      transitionIndex < transitions.length &&
+      currentWeightT <= transitions[transitionIndex].thresholdWeightT + 1e-9
+    ) {
+      currentAltitudeFt = transitions[transitionIndex].altitudeFt;
+      stepClimbs.push({
+        altitudeFt: currentAltitudeFt,
+        atWeightT: currentWeightT,
+      });
+      transitionIndex += 1;
+    }
+  };
+
+  applyEligibleClimbs();
+  const initialFuelFlowKgHr = getLrcCruiseState(clamp(currentWeightT, minCruiseWeightT, maxCruiseWeightT), currentAltitudeFt / 100, 0, perfAdjust).fuelHr;
+  if (burnRequiredKg <= 1e-6) {
+    return {
+      burnRequiredKg,
+      timeMinutes: 0,
+      averageFuelFlowKgHr: initialFuelFlowKgHr,
+      initialFuelFlowKgHr,
+      stepClimbs,
+    };
+  }
+
+  const BURN_STEP_KG = 250;
+  let burnedKg = 0;
+  let elapsedHours = 0;
+
+  while (burnedKg < burnRequiredKg - 1e-6) {
+    applyEligibleClimbs();
+    const lookupWeightT = clamp(currentWeightT, minCruiseWeightT, maxCruiseWeightT);
+    const fuelFlowKgHr = getLrcCruiseState(lookupWeightT, currentAltitudeFt / 100, 0, perfAdjust).fuelHr;
+    if (!Number.isFinite(fuelFlowKgHr) || fuelFlowKgHr <= 0) {
+      throw new Error("Computed LRC fuel flow is invalid during step-climb simulation");
+    }
+
+    const remainingKg = burnRequiredKg - burnedKg;
+    let nextSegmentLimitKg = remainingKg;
+    if (transitionIndex < transitions.length && currentWeightT > transitions[transitionIndex].thresholdWeightT + 1e-9) {
+      nextSegmentLimitKg = Math.min(nextSegmentLimitKg, (currentWeightT - transitions[transitionIndex].thresholdWeightT) * 1000);
+    }
+    if (nextSegmentLimitKg <= 1e-6) {
+      applyEligibleClimbs();
+      continue;
+    }
+
+    const stepBurnKg = Math.min(BURN_STEP_KG, nextSegmentLimitKg);
+    const stepHours = stepBurnKg / fuelFlowKgHr;
+    burnedKg += stepBurnKg;
+    currentWeightT -= stepBurnKg / 1000;
+    elapsedHours += stepHours;
+  }
+
+  return {
+    burnRequiredKg,
+    timeMinutes: elapsedHours * 60,
+    averageFuelFlowKgHr: burnRequiredKg / elapsedHours,
+    initialFuelFlowKgHr,
+    stepClimbs,
+  };
+}
+
 function getDriftdownRanges() {
   if (!DRIFTDOWN_TABLE) {
     return {
@@ -2446,12 +2556,27 @@ function bindLrcAltitudeLimits() {
         const burnKgToTarget = Math.max(0, (weightT - targetWeightT) * 1000);
         let cruiseFuelFlowText = "Unavailable for this altitude";
         let timeText = burnKgToTarget > 0 ? "Unavailable for this altitude" : "Already reached";
+        let climbPlanText = burnKgToTarget > 0 ? "Unavailable for this altitude" : "No climb required";
         try {
-          const cruise = getLrcCruiseState(weightT, currentFl, 0, perfAdjust);
-          cruiseFuelFlowText = `${format(cruise.fuelHr, 0)} kg/h @ FL${format(currentFl, 0)}`;
+          const stepClimb = simulateStepClimbFuelToTargetWeight({
+            startWeightT: weightT,
+            targetWeightT,
+            startFlightLevel: currentFl,
+            targetOptimumAltFt,
+            isaDeviationCUsed: limits.isaDeviationCUsed,
+            perfAdjust,
+          });
+          cruiseFuelFlowText =
+            burnKgToTarget > 0
+              ? `${format(stepClimb.averageFuelFlowKgHr, 0)} kg/h avg (start ${format(stepClimb.initialFuelFlowKgHr, 0)} @ FL${format(currentFl, 0)})`
+              : `${format(stepClimb.initialFuelFlowKgHr, 0)} kg/h @ FL${format(currentFl, 0)}`;
           if (burnKgToTarget > 0) {
-            const minutesToTarget = (burnKgToTarget / cruise.fuelHr) * 60;
-            timeText = `${format(minutesToTarget, 1)} min (${formatMinutes(minutesToTarget)})`;
+            timeText = `${format(stepClimb.timeMinutes, 1)} min (${formatMinutes(stepClimb.timeMinutes)})`;
+            climbPlanText = stepClimb.stepClimbs.length
+              ? stepClimb.stepClimbs
+                  .map((step) => `FL${format(step.altitudeFt / 100, 0)} @ ${format(step.atWeightT, 1)} t`)
+                  .join(" -> ")
+              : "No step climb before target weight";
           }
         } catch (error) {
           if (!String(error?.message || "").startsWith("LRC FL out of range")) {
@@ -2468,6 +2593,7 @@ function bindLrcAltitudeLimits() {
           ],
           ["Equivalent Weight", `${format(targetWeightT, 1)} t`],
           ["Current LRC Fuel Flow", cruiseFuelFlowText],
+          ["Step Climb Plan", climbPlanText],
           ["Fuel to Burn to Equivalent Weight", `${format(burnKgToTarget, 0)} kg`],
           ["Time to Reach New Optimum Altitude", timeText],
           ["__spacer__", ""],
@@ -3035,13 +3161,14 @@ function bindLoseTime() {
         : "No enroute speed reduction needed";
       const optionCRows = comparison.optionC
         ? [
-            ["Option C Time to Fix (target)", formatMinutes(comparison.targetFixTime)],
+            ["Time to Fix (target)", formatMinutes(comparison.targetFixTime)],
+            ["Required Average Ground Speed", `${format(comparison.optionC.requiredGsKt, 0)} kt`],
             [
-              "Option C Required IAS / Mach",
+              "Required IAS / Mach",
               `${format(comparison.optionC.requiredIasKt, 0)} kt / ${format(comparison.optionC.requiredMach, 3)}`,
             ],
           ]
-        : [["Option C", comparison.optionCError || "Unable to compute required speed"]];
+        : [["Required Speed Solution", comparison.optionCError || "Unable to compute required speed"]];
 
       renderRows(out, [
         ["Start FL (used)", `FL${format(startFl, 0)}`],
