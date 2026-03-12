@@ -8,7 +8,8 @@ const DIVERSION_LRC_TABLE = window.DIVERSION_LRC_TABLE;
 const GO_AROUND_TABLE = window.GO_AROUND_TABLE;
 
 const { shortTripAnm, longRangeAnm, longRangeFuel: longRangeFuelTable, shortTripFuelAlt } = TABLE_DATA;
-const APP_VERSION = "v7.1.0";
+const APP_VERSION = "v7.2.0";
+const INPUT_STATE_STORAGE_KEY = "performance-calculators-input-state-v1";
 
 const R_AIR = 287.05287;
 const GAMMA = 1.4;
@@ -2495,6 +2496,74 @@ function fieldIsBlank(value) {
   return String(value ?? "").trim() === "";
 }
 
+function getPersistableFields() {
+  return Array.from(document.querySelectorAll("input[id], select[id], textarea[id]"));
+}
+
+function captureInputState() {
+  const snapshot = {};
+  getPersistableFields().forEach((el) => {
+    if (!el.id) return;
+    const type = (el.type || "").toLowerCase();
+    if (type === "checkbox" || type === "radio") {
+      snapshot[el.id] = { checked: !!el.checked };
+    } else {
+      snapshot[el.id] = { value: el.value };
+    }
+  });
+  return snapshot;
+}
+
+function persistInputState() {
+  try {
+    localStorage.setItem(INPUT_STATE_STORAGE_KEY, JSON.stringify(captureInputState()));
+  } catch {
+    // Ignore storage failures (quota/privacy mode) and continue app execution.
+  }
+}
+
+function restorePersistedInputState() {
+  try {
+    const raw = localStorage.getItem(INPUT_STATE_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== "object") return;
+    getPersistableFields().forEach((el) => {
+      if (!el.id || !(el.id in saved)) return;
+      const savedEntry = saved[el.id];
+      const type = (el.type || "").toLowerCase();
+      if ((type === "checkbox" || type === "radio") && typeof savedEntry?.checked === "boolean") {
+        el.checked = savedEntry.checked;
+        return;
+      }
+      if (typeof savedEntry?.value === "string") {
+        el.value = savedEntry.value;
+      }
+    });
+  } catch {
+    // Ignore malformed persisted state and continue with markup defaults.
+  }
+}
+
+function installInputStatePersistence() {
+  const onFieldEvent = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (!target.matches("input[id], select[id], textarea[id]")) return;
+    persistInputState();
+  };
+
+  document.addEventListener("input", onFieldEvent, true);
+  document.addEventListener("change", onFieldEvent, true);
+  document.addEventListener(
+    "submit",
+    () => {
+      setTimeout(persistInputState, 0);
+    },
+    true,
+  );
+}
+
 function bindTripFuel() {
   const form = document.querySelector("#trip-fuel-form");
   const out = document.querySelector("#trip-fuel-out");
@@ -3729,6 +3798,8 @@ function setAppVersionLabel() {
 
 setAppVersionLabel();
 setAltFlRangeLabels();
+restorePersistedInputState();
+installInputStatePersistence();
 bindTripFuel();
 bindLrcAltitudeLimits();
 bindEngineOut();
