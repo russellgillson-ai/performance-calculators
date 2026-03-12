@@ -17,7 +17,7 @@
     <main class="layout">
       <header class="hero">
         <h1>Performance Calculators</h1>
-        <p class="app-version" id="app-version">Version v7.0.0</p>
+        <p class="app-version" id="app-version">Version v7.1.0</p>
       </header>
 
       <section class="panel" aria-labelledby="global-settings-heading">
@@ -30,53 +30,29 @@
         </div>
       </section>
 
-      <section class="panel" aria-labelledby="short-trip-heading">
-        <h2 id="short-trip-heading">Short Trip Fuel</h2>
-        <form id="short-trip-form" class="grid">
+      <section class="panel" aria-labelledby="trip-fuel-heading">
+        <h2 id="trip-fuel-heading">Trip Fuel</h2>
+        <p class="module-note">Short-trip/LRC unified fuel model with ANM blending from 600-800</p>
+        <form id="trip-fuel-form" class="grid">
           <label>
             Ground Distance (GNM)
-            <input type="number" step="1" id="st-gnm" value="599" />
+            <input type="number" step="1" id="trip-gnm" value="599" />
           </label>
           <label>
             Wind +/-
-            <input type="number" step="1" id="st-wind" value="60" />
+            <input type="number" step="1" id="trip-wind" value="60" />
           </label>
           <label>
             Landing Weight (t)
-            <input type="number" step="0.1" id="st-weight" value="172.9" />
+            <input type="number" step="0.1" id="trip-weight" value="172.9" />
           </label>
           <label>
             Additional Holding Fuel (min)
-            <input type="number" step="1" id="st-hold-min" value="0" />
+            <input type="number" step="1" id="trip-hold-min" value="0" />
           </label>
           <button type="submit">Calculate</button>
         </form>
-        <div id="short-trip-out" class="results"></div>
-      </section>
-
-      <section class="panel" aria-labelledby="long-range-heading">
-        <h2 id="long-range-heading">LRC Trip Fuel</h2>
-        <p class="module-note">310/.85 climb, Long Range Cruise speed and .85/310/250 descent</p>
-        <form id="long-range-form" class="grid">
-          <label>
-            Ground Distance (GNM)
-            <input type="number" step="1" id="lr-gnm" value="4000" />
-          </label>
-          <label>
-            Wind +/-
-            <input type="number" step="1" id="lr-wind" value="0" />
-          </label>
-          <label>
-            Landing Weight (t)
-            <input type="number" step="0.1" id="lr-weight" value="172.9" />
-          </label>
-          <label>
-            Additional Holding Fuel (min)
-            <input type="number" step="1" id="lr-hold-min" value="0" />
-          </label>
-          <button type="submit">Calculate</button>
-        </form>
-        <div id="long-range-out" class="results"></div>
+        <div id="trip-fuel-out" class="results"></div>
       </section>
 
       <section class="panel" aria-labelledby="lrc-altitude-heading">

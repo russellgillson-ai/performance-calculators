@@ -8,7 +8,7 @@ const DIVERSION_LRC_TABLE = window.DIVERSION_LRC_TABLE;
 const GO_AROUND_TABLE = window.GO_AROUND_TABLE;
 
 const { shortTripAnm, longRangeAnm, longRangeFuel: longRangeFuelTable, shortTripFuelAlt } = TABLE_DATA;
-const APP_VERSION = "v7.0.0";
+const APP_VERSION = "v7.1.0";
 
 const R_AIR = 287.05287;
 const GAMMA = 1.4;
@@ -1114,7 +1114,7 @@ function buildFuelRequirement({ flightFuelKg, landingWeightT, additionalHoldingM
   };
 }
 
-function shortTripFuelAndAlt(anm, weight, perfAdjust, additionalHoldingMin) {
+function shortTripCore(anm, weight, perfAdjust) {
   if (anm < 50 || anm > 600 || weight < 120 || weight > 200) {
     throw new Error("Short Trip fuel/alt input out of range (ANM 50-600, weight 120-200)");
   }
@@ -1123,26 +1123,31 @@ function shortTripFuelAndAlt(anm, weight, perfAdjust, additionalHoldingMin) {
   const altByAnm = interpolateAcrossWeight(shortTripFuelAlt.weightAxis, shortTripFuelAlt.altitudeValues, weight);
 
   const fuel1000kg = linear(shortTripFuelAlt.anmAxis, fuelByAnm, anm);
-  const altitude = linear(shortTripFuelAlt.anmAxis, altByAnm, anm);
-  const timeText = linear(shortTripFuelAlt.anmAxis, shortTripFuelAlt.timeValuesText.map(timeTextToMinutes), anm);
-
+  const altitudeFt = linear(shortTripFuelAlt.anmAxis, altByAnm, anm);
+  const timeMinutes = linear(shortTripFuelAlt.anmAxis, shortTripFuelAlt.timeValuesText.map(timeTextToMinutes), anm);
   const flightFuelKg = fuel1000kg * 1000 * (1 + perfAdjust);
+
+  return { flightFuelKg, altitudeFt, timeMinutes };
+}
+
+function shortTripFuelAndAlt(anm, weight, perfAdjust, additionalHoldingMin) {
+  const core = shortTripCore(anm, weight, perfAdjust);
   const fuelBuildUp = buildFuelRequirement({
-    flightFuelKg,
+    flightFuelKg: core.flightFuelKg,
     landingWeightT: weight,
     additionalHoldingMin,
     perfAdjust,
   });
 
   return {
-    flightFuelKg,
+    flightFuelKg: core.flightFuelKg,
     frfKg: fuelBuildUp.frfKg,
     contingencyKg: fuelBuildUp.contingencyKg,
     extraHoldingKg: fuelBuildUp.extraHoldingKg,
     fixedAllowanceKg: fuelBuildUp.fixedAllowanceKg,
     totalFuelKg: fuelBuildUp.totalFuelKg,
-    altitude,
-    timeMinutes: timeText,
+    altitude: core.altitudeFt,
+    timeMinutes: core.timeMinutes,
   };
 }
 
@@ -1150,7 +1155,7 @@ function longRangeAnmFromGnm(gnm, wind) {
   return bilinear(longRangeAnm.gnmAxis, longRangeAnm.windAxis, longRangeAnm.values, gnm, wind);
 }
 
-function longRangeFuel(anm, weight, perfAdjust, additionalHoldingMin) {
+function longRangeCore(anm, weight, perfAdjust) {
   if (anm < 800 || anm > 8400 || weight < 120 || weight > 200) {
     throw new Error("Long Range input out of range (ANM 800-8400, weight 120-200)");
   }
@@ -1166,22 +1171,163 @@ function longRangeFuel(anm, weight, perfAdjust, additionalHoldingMin) {
   const timeMinutes = timeDays * 24 * 60;
 
   const flightFuel1000KgAdjusted = fuel1000kg * (1 + perfAdjust);
-  const flightFuelKg = flightFuel1000KgAdjusted * 1000;
+  return {
+    flightFuel1000Kg: flightFuel1000KgAdjusted,
+    flightFuelKg: flightFuel1000KgAdjusted * 1000,
+    timeMinutes,
+  };
+}
+
+function longRangeFuel(anm, weight, perfAdjust, additionalHoldingMin) {
+  const core = longRangeCore(anm, weight, perfAdjust);
   const fuelBuildUp = buildFuelRequirement({
-    flightFuelKg,
+    flightFuelKg: core.flightFuelKg,
     landingWeightT: weight,
     additionalHoldingMin,
     perfAdjust,
   });
 
   return {
-    flightFuel1000Kg: flightFuel1000KgAdjusted,
+    flightFuel1000Kg: core.flightFuel1000Kg,
+    frfKg: fuelBuildUp.frfKg,
+    contingencyKg: fuelBuildUp.contingencyKg,
+    extraHoldingKg: fuelBuildUp.extraHoldingKg,
+    fixedAllowanceKg: fuelBuildUp.fixedAllowanceKg,
+    totalFuelKg: fuelBuildUp.totalFuelKg,
+    timeMinutes: core.timeMinutes,
+  };
+}
+
+function estimateLongSectorCruiseGuidance(landingWeightT, flightFuelKg, tripTimeMinutes) {
+  if (!LRC_ALTITUDE_LIMITS_TABLE) return null;
+  const ISA_DEVIATION_C = 10;
+  const weightAxis = LRC_ALTITUDE_LIMITS_TABLE.weightAxisT || [];
+  if (weightAxis.length < 2) return null;
+
+  const minWeightT = weightAxis[0];
+  const maxWeightT = weightAxis[weightAxis.length - 1];
+  const startWeightEstimatedT = landingWeightT + flightFuelKg / 1000;
+  const startWeightUsedT = clamp(startWeightEstimatedT, minWeightT, maxWeightT);
+  const landingWeightUsedT = clamp(landingWeightT, minWeightT, maxWeightT);
+  const startLimits = evaluateLrcAltitudeLimits(startWeightUsedT, ISA_DEVIATION_C);
+  const landingLimits = evaluateLrcAltitudeLimits(landingWeightUsedT, ISA_DEVIATION_C);
+  const startBandLowFt = Math.max(0, startLimits.optimumAltFt - 2000);
+  const startBandHighFt = startLimits.optimumAltFt + 2000;
+
+  const burnRateKgPerMin = tripTimeMinutes > 0 ? flightFuelKg / tripTimeMinutes : NaN;
+  const stepClimbs = [];
+  const nextStepFromFt = Math.floor(startLimits.optimumAltFt / 1000) * 1000 + 1000;
+  const finalStepFt = Math.floor(landingLimits.optimumAltFt / 1000) * 1000;
+  for (let altitudeFt = nextStepFromFt; altitudeFt <= finalStepFt; altitudeFt += 1000) {
+    const triggerWeightT = weightForNominatedOptimumAltitude(altitudeFt, ISA_DEVIATION_C);
+    if (triggerWeightT > startWeightUsedT + 1e-9 || triggerWeightT < landingWeightUsedT - 1e-9) continue;
+    const burnToTriggerKg = Math.max(0, (startWeightEstimatedT - triggerWeightT) * 1000);
+    const etaMin = Number.isFinite(burnRateKgPerMin) && burnRateKgPerMin > 0 ? burnToTriggerKg / burnRateKgPerMin : NaN;
+    stepClimbs.push({
+      altitudeFt,
+      triggerWeightT,
+      etaMin,
+    });
+  }
+
+  return {
+    isaDeviationC: ISA_DEVIATION_C,
+    startWeightEstimatedT,
+    startWeightUsedT,
+    landingWeightUsedT,
+    startOptimumAltFt: startLimits.optimumAltFt,
+    landingOptimumAltFt: landingLimits.optimumAltFt,
+    startBandLowFt,
+    startBandHighFt,
+    stepClimbs,
+    clampedWeights:
+      Math.abs(startWeightEstimatedT - startWeightUsedT) > 1e-9 || Math.abs(landingWeightT - landingWeightUsedT) > 1e-9,
+  };
+}
+
+function calculateTripFuel(gnm, wind, weight, perfAdjust, additionalHoldingMin) {
+  const shortAnm = (() => {
+    try {
+      return shortTripAnmFromGnm(gnm, wind);
+    } catch {
+      return NaN;
+    }
+  })();
+  const longAnm = (() => {
+    try {
+      return longRangeAnmFromGnm(gnm, wind);
+    } catch {
+      return NaN;
+    }
+  })();
+  if (!Number.isFinite(shortAnm) && !Number.isFinite(longAnm)) {
+    throw new Error("Trip fuel ANM lookup out of range");
+  }
+
+  const referenceAnm = Number.isFinite(longAnm) ? longAnm : shortAnm;
+  let mode;
+  let anmDisplay;
+  let flightFuelKg;
+  let timeMinutes;
+  let suggestedAltFt = NaN;
+  let blendAlpha = NaN;
+
+  if (referenceAnm < 600) {
+    if (!Number.isFinite(shortAnm)) {
+      throw new Error("Trip fuel requires short-trip coverage below 600 ANM");
+    }
+    const shortResult = shortTripCore(shortAnm, weight, perfAdjust);
+    mode = "short";
+    anmDisplay = shortAnm;
+    flightFuelKg = shortResult.flightFuelKg;
+    timeMinutes = shortResult.timeMinutes;
+    suggestedAltFt = shortResult.altitudeFt;
+  } else if (referenceAnm > 800) {
+    if (!Number.isFinite(longAnm)) {
+      throw new Error("Trip fuel requires long-range coverage above 800 ANM");
+    }
+    const longResult = longRangeCore(longAnm, weight, perfAdjust);
+    mode = "long";
+    anmDisplay = longAnm;
+    flightFuelKg = longResult.flightFuelKg;
+    timeMinutes = longResult.timeMinutes;
+  } else {
+    blendAlpha = clamp((referenceAnm - 600) / 200, 0, 1);
+    const shortEdge = shortTripCore(600, weight, perfAdjust);
+    const longEdge = longRangeCore(800, weight, perfAdjust);
+    mode = "blend";
+    anmDisplay =
+      Number.isFinite(shortAnm) && Number.isFinite(longAnm)
+        ? shortAnm + (longAnm - shortAnm) * blendAlpha
+        : referenceAnm;
+    flightFuelKg = shortEdge.flightFuelKg + (longEdge.flightFuelKg - shortEdge.flightFuelKg) * blendAlpha;
+    timeMinutes = shortEdge.timeMinutes + (longEdge.timeMinutes - shortEdge.timeMinutes) * blendAlpha;
+    suggestedAltFt = shortEdge.altitudeFt;
+  }
+
+  const fuelBuildUp = buildFuelRequirement({
+    flightFuelKg,
+    landingWeightT: weight,
+    additionalHoldingMin,
+    perfAdjust,
+  });
+  const longGuidance = anmDisplay >= 800 ? estimateLongSectorCruiseGuidance(weight, flightFuelKg, timeMinutes) : null;
+
+  return {
+    mode,
+    anmDisplay,
+    shortAnm,
+    longAnm,
+    blendAlpha,
+    flightFuelKg,
     frfKg: fuelBuildUp.frfKg,
     contingencyKg: fuelBuildUp.contingencyKg,
     extraHoldingKg: fuelBuildUp.extraHoldingKg,
     fixedAllowanceKg: fuelBuildUp.fixedAllowanceKg,
     totalFuelKg: fuelBuildUp.totalFuelKg,
     timeMinutes,
+    suggestedAltFt,
+    longGuidance,
   };
 }
 
@@ -2349,87 +2495,81 @@ function fieldIsBlank(value) {
   return String(value ?? "").trim() === "";
 }
 
-function bindShortTrip() {
-  const form = document.querySelector("#short-trip-form");
-  const out = document.querySelector("#short-trip-out");
+function bindTripFuel() {
+  const form = document.querySelector("#trip-fuel-form");
+  const out = document.querySelector("#trip-fuel-out");
+  if (!form || !out) return;
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (
       missingFieldsBanner(out, [
-        fieldIsBlank(document.querySelector("#st-gnm").value) ? "Ground Distance (GNM)" : "",
-        fieldIsBlank(document.querySelector("#st-wind").value) ? "Wind +/-" : "",
-        fieldIsBlank(document.querySelector("#st-weight").value) ? "Landing Weight" : "",
-        fieldIsBlank(document.querySelector("#st-hold-min").value) ? "Additional Holding Fuel (min)" : "",
+        fieldIsBlank(document.querySelector("#trip-gnm").value) ? "Ground Distance (GNM)" : "",
+        fieldIsBlank(document.querySelector("#trip-wind").value) ? "Wind +/-" : "",
+        fieldIsBlank(document.querySelector("#trip-weight").value) ? "Landing Weight" : "",
+        fieldIsBlank(document.querySelector("#trip-hold-min").value) ? "Additional Holding Fuel (min)" : "",
       ])
     ) {
       return;
     }
     try {
-      const gnm = parseNum(document.querySelector("#st-gnm").value);
-      const wind = parseNum(document.querySelector("#st-wind").value);
-      const weight = parseNum(document.querySelector("#st-weight").value);
+      const gnm = parseNum(document.querySelector("#trip-gnm").value);
+      const wind = parseNum(document.querySelector("#trip-wind").value);
+      const weight = parseNum(document.querySelector("#trip-weight").value);
       const perfAdjust = getGlobalPerfAdjust();
-      const holdingMin = parseNum(document.querySelector("#st-hold-min").value);
+      const holdingMin = parseNum(document.querySelector("#trip-hold-min").value);
+      const result = calculateTripFuel(gnm, wind, weight, perfAdjust, holdingMin);
 
-      const anm = shortTripAnmFromGnm(gnm, wind);
-      const result = shortTripFuelAndAlt(anm, weight, perfAdjust, holdingMin);
-
-      renderRows(out, [
-        ["Air Distance (ANM)", `${format(anm, 0)} nm`],
+      const rows = [
+        ["Air Distance (ANM)", `${format(result.anmDisplay, 0)} nm`],
         ["Flight Fuel", `${format(result.flightFuelKg, 0)} kg`],
         ["FRF (30 min hold @ 1500 ft)", `${format(result.frfKg, 0)} kg`],
         ["Contingency Fuel (5%, min 350, max 1200)", `${format(result.contingencyKg, 0)} kg`],
         [`Additional Holding Fuel (${format(holdingMin, 1)} min)`, `${format(result.extraHoldingKg, 0)} kg`],
         ["Approach Fuel", `${format(result.fixedAllowanceKg, 0)} kg`],
         ["Total Fuel Required", `${format(result.totalFuelKg, 0)} kg`],
-        ["Suggested Alt", `${format(result.altitude, 0)} ft`],
         ["Time", formatMinutes(result.timeMinutes)],
-      ]);
-    } catch (error) {
-      renderError(out, error.message);
-    }
-  });
+      ];
 
-  form.dispatchEvent(new Event("submit"));
-}
+      if (result.anmDisplay < 800 && Number.isFinite(result.suggestedAltFt)) {
+        rows.splice(7, 0, ["Suggested Alt", `${format(result.suggestedAltFt, 0)} ft`]);
+      }
 
-function bindLongRange() {
-  const form = document.querySelector("#long-range-form");
-  const out = document.querySelector("#long-range-out");
+      if (result.longGuidance) {
+        const guidance = result.longGuidance;
+        const climbPlanText = guidance.stepClimbs.length
+          ? guidance.stepClimbs
+              .map((step) => {
+                const etaText = Number.isFinite(step.etaMin) ? ` (${formatMinutes(step.etaMin)})` : "";
+                return `FL${format(step.altitudeFt / 100, 0)} @ ${format(step.triggerWeightT, 1)} t${etaText}`;
+              })
+              .join(" -> ")
+          : "No step climb trigger within trip burn";
 
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (
-      missingFieldsBanner(out, [
-        fieldIsBlank(document.querySelector("#lr-gnm").value) ? "Ground Distance (GNM)" : "",
-        fieldIsBlank(document.querySelector("#lr-wind").value) ? "Wind +/-" : "",
-        fieldIsBlank(document.querySelector("#lr-weight").value) ? "Landing Weight" : "",
-        fieldIsBlank(document.querySelector("#lr-hold-min").value) ? "Additional Holding Fuel (min)" : "",
-      ])
-    ) {
-      return;
-    }
-    try {
-      const gnm = parseNum(document.querySelector("#lr-gnm").value);
-      const wind = parseNum(document.querySelector("#lr-wind").value);
-      const weight = parseNum(document.querySelector("#lr-weight").value);
-      const perfAdjust = getGlobalPerfAdjust();
-      const holdingMin = parseNum(document.querySelector("#lr-hold-min").value);
+        rows.push(
+          ["__spacer__", ""],
+          ["__section__", "Estimated Long-Sector Altitude (ISA+10)"],
+          ["Estimated Start Weight (Landing + Flight Fuel)", `${format(guidance.startWeightEstimatedT, 1)} t`],
+          [
+            "Estimated Optimum Altitude (Start / Landing)",
+            `${format(guidance.startOptimumAltFt, 0)} / ${format(guidance.landingOptimumAltFt, 0)} ft (FL${format(guidance.startOptimumAltFt / 100, 0)} / FL${format(guidance.landingOptimumAltFt / 100, 0)})`,
+          ],
+          [
+            "Recommended Cruise Band (Start Optimum \u00b12000)",
+            `${format(guidance.startBandLowFt, 0)}-${format(guidance.startBandHighFt, 0)} ft`,
+          ],
+          ["Estimated Step Climb Triggers", climbPlanText],
+        );
 
-      const anm = longRangeAnmFromGnm(gnm, wind);
-      const result = longRangeFuel(anm, weight, perfAdjust, holdingMin);
+        if (guidance.clampedWeights) {
+          rows.push([
+            "__warning__",
+            "Altitude estimate uses clamped weight at LRC altitude-table limits",
+          ]);
+        }
+      }
 
-      renderRows(out, [
-        ["Air Distance (ANM)", `${format(anm, 0)} nm`],
-        ["Flight Fuel", `${format(result.flightFuel1000Kg * 1000, 0)} kg`],
-        ["FRF (30 min hold @ 1500 ft)", `${format(result.frfKg, 0)} kg`],
-        ["Contingency Fuel (5%, min 350, max 1200)", `${format(result.contingencyKg, 0)} kg`],
-        [`Additional Holding Fuel (${format(holdingMin, 1)} min)`, `${format(result.extraHoldingKg, 0)} kg`],
-        ["Approach Fuel", `${format(result.fixedAllowanceKg, 0)} kg`],
-        ["Total Fuel Required", `${format(result.totalFuelKg, 0)} kg`],
-        ["Time", formatMinutes(result.timeMinutes)],
-      ]);
+      renderRows(out, rows);
     } catch (error) {
       renderError(out, error.message);
     }
@@ -3458,8 +3598,7 @@ function bindGlobalSettings() {
 
   const refreshAll = () => {
     [
-      "#short-trip-form",
-      "#long-range-form",
+      "#trip-fuel-form",
       "#lrc-altitude-form",
       "#engine-out-drift-form",
       "#engine-out-diversion-form",
@@ -3590,8 +3729,7 @@ function setAppVersionLabel() {
 
 setAppVersionLabel();
 setAltFlRangeLabels();
-bindShortTrip();
-bindLongRange();
+bindTripFuel();
 bindLrcAltitudeLimits();
 bindEngineOut();
 bindDiversion();
