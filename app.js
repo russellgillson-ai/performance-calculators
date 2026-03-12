@@ -211,11 +211,11 @@ function validateLrcFlightLevelRange(flightLevel, label = "Flight level") {
 
 function getGlobalPerfAdjust() {
   const el = document.querySelector("#global-perf-adjust");
-  const perfAdjust = parseNum(el?.value);
-  if (!Number.isFinite(perfAdjust)) {
+  const perfAdjustPercent = parseNum(el?.value);
+  if (!Number.isFinite(perfAdjustPercent)) {
     throw new Error("Global flight plan performance adjustment is invalid");
   }
-  return perfAdjust;
+  return perfAdjustPercent / 100;
 }
 
 function format(value, digits = 2) {
@@ -2312,8 +2312,7 @@ function bindLongRange() {
 
       renderRows(out, [
         ["Air Distance (ANM)", `${format(anm, 0)} nm`],
-        ["Flight Fuel", `${format(result.flightFuel1000Kg, 3)} x 1000 kg`],
-        ["Flight Fuel (kg)", `${format(result.flightFuel1000Kg * 1000, 0)} kg`],
+        ["Flight Fuel", `${format(result.flightFuel1000Kg * 1000, 0)} kg`],
         ["FRF (30 min hold @ 1500 ft)", `${format(result.frfKg, 0)} kg`],
         ["Contingency Fuel (5%, min 350, max 1200)", `${format(result.contingencyKg, 0)} kg`],
         [`Additional Holding Fuel (${format(holdingMin, 1)} min)`, `${format(result.extraHoldingKg, 0)} kg`],
@@ -2383,6 +2382,14 @@ function bindLrcAltitudeLimits() {
 
       validateLrcFlightLevelRange(currentFl, "Current Alt/FL");
       const limits = evaluateLrcAltitudeLimits(weightT, isaDeviationCInput);
+      const driftdownRanges = getDriftdownRanges();
+      const eoWeightUsedT = clamp(weightT, driftdownRanges.minWeightT, driftdownRanges.maxWeightT);
+      const seLrcCapability = singleEngineLrcCapabilityAltitude(eoWeightUsedT, isaDeviationCInput);
+      const driftLevelOff = evaluateDriftdownLevelOff(eoWeightUsedT, isaDeviationCInput);
+      const eoWarnings = [];
+      if (eoWeightUsedT !== weightT) {
+        eoWarnings.push(`Engine inop weight clamped to ${format(eoWeightUsedT, 1)} t`);
+      }
 
       if (!currentAltInput.isThreeDigitFl) {
         currentAltEl.value = formatInputNumber(currentFl, 0);
@@ -2400,18 +2407,19 @@ function bindLrcAltitudeLimits() {
       lastTempSource = temperaturePair.sourceUsed;
 
       const rows = [
-        ...(limits.clampedToIsa10 ? [["__warning__", `Input warning: ISA deviation floored to ISA+${format(limits.isaDeviationCUsed, 0)}`]] : []),
         ["__section__", "Baseline Limits"],
-        [
-          "ISA Deviation Used",
-          limits.clampedToIsa10
-            ? `ISA+${format(limits.isaDeviationCUsed, 0)} (input ${format(limits.isaDeviationCInput, 0)}; floored to ISA+10)`
-            : `ISA+${format(limits.isaDeviationCUsed, 0)}`,
-        ],
         ["Optimum Altitude", `${format(limits.optimumAltFt, 0)} ft (FL${format(limits.optimumAltFt / 100, 0)})`],
         [
           "LRC Maximum Altitude / Thrust Limited",
           `${format(limits.maxAltFt, 0)} ft (FL${format(limits.maxAltFt / 100, 0)}) / ${limits.thrustLimited ? "Yes" : "No"}`,
+        ],
+        [
+          "Engine Inoperative Maximum Altitude - SE LRC Altitude Capability (100 fpm)",
+          `${format(seLrcCapability.altitudeFt, 0)} ft (FL${format(seLrcCapability.altitudeFt / 100, 0)})`,
+        ],
+        [
+          "Driftdown Altitude",
+          `${format(driftLevelOff.levelOffAltFt, 0)} ft (FL${format(driftLevelOff.levelOffAltFt / 100, 0)})`,
         ],
       ];
 
@@ -2422,7 +2430,7 @@ function bindLrcAltitudeLimits() {
         const minutesToTarget = burnKgToTarget > 0 ? (burnKgToTarget / cruise.fuelHr) * 60 : 0;
         const timeText = burnKgToTarget > 0 ? `${format(minutesToTarget, 1)} min (${formatMinutes(minutesToTarget)})` : "Already reached";
 
-        rows.splice(6, 0,
+        rows.push(
           ["__spacer__", ""],
           ["__section__", "Nominated Optimum (optional)"],
           [
@@ -2435,6 +2443,16 @@ function bindLrcAltitudeLimits() {
           ["Time to Reach Nominated Optimum", timeText],
           ["__spacer__", ""],
         );
+      }
+
+      if (limits.clampedToIsa10) {
+        rows.push([
+          "__warning__",
+          `Maximum altitude note: ISA deviation floored to ISA+${format(limits.isaDeviationCUsed, 0)} (input ISA+${format(limits.isaDeviationCInput, 0)})`,
+        ]);
+      }
+      if (eoWarnings.length) {
+        rows.push(["__warning__", `Input warning: ${eoWarnings.join(" | ")}`]);
       }
 
       renderRows(out, rows);
