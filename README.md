@@ -1,6 +1,6 @@
 # B787 Performance Web App
 
-This app reproduces your Excel calculators in a browser UI:
+This app reproduces your Excel calculators in a browser UI and is configured as a PWA (installable + offline + saved inputs):
 
 - Short Trip Fuel
 - Long Range Cruise
@@ -28,19 +28,30 @@ This app reproduces your Excel calculators in a browser UI:
 Serve the folder over HTTP (required for service worker/PWA):
 
 ```bash
-cd /Users/russellgillson/Documents/New\ project
+cd /Users/russellgillson/Documents/MyApps/787\ Perf\ Calculators
 python3 -m http.server 8080
 ```
 
 Then open `http://localhost:8080`.
 
-## iPad Offline Install
+## Install As App (Desktop + iPhone/iPad)
 
-1. Deploy this folder to a static HTTPS host (for example Netlify or GitHub Pages), or run it locally and browse from iPad while on the same Wi-Fi.
-2. Open the app URL in Safari on iPad.
-3. Tap `Share` -> `Add to Home Screen`.
-4. Launch once while online so assets are cached by the service worker.
-5. After that, it can run offline from the Home Screen app.
+Desktop (Chrome/Edge):
+1. Open the HTTPS app URL.
+2. Use the browser install button (`Install app`) in the address bar/menu.
+3. Launch from desktop/start menu like a native app.
+
+iPhone/iPad (Safari):
+1. Open the HTTPS app URL.
+2. Tap `Share` -> `Add to Home Screen`.
+3. Launch once while online so assets are cached by the service worker.
+4. After that, it can run offline from the Home Screen app.
+
+## Input Persistence (Local Storage)
+
+- All inputs across modules are saved locally in browser storage as you type/change/submit.
+- On next launch, the app restores the last entered values before calculations run.
+- If browser/site data is fully cleared for the app origin, saved values are removed by the browser.
 
 ## Global Setting
 

@@ -8,7 +8,7 @@ const DIVERSION_LRC_TABLE = window.DIVERSION_LRC_TABLE;
 const GO_AROUND_TABLE = window.GO_AROUND_TABLE;
 
 const { shortTripAnm, longRangeAnm, longRangeFuel: longRangeFuelTable, shortTripFuelAlt } = TABLE_DATA;
-const APP_VERSION = "v7.2.0";
+const APP_VERSION = "v7.3.0";
 const INPUT_STATE_STORAGE_KEY = "performance-calculators-input-state-v1";
 
 const R_AIR = 287.05287;
