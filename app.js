@@ -3289,7 +3289,7 @@ function bindHolding() {
         ["Outbound Leg (wind-corrected)", `${format(timing.outboundLegMin, 2)} min`],
         [
           "Total Hold Time",
-          `${format(timing.totalHoldMin, 2)} min (${formatMinutes(timing.totalHoldMin)})`,
+          `${format(timing.totalHoldMin, 1)} min (${formatMinutes(timing.totalHoldMin)})`,
         ],
         ["Timing IAS / TAS / Mach", `${format(timing.iasKt, 0)} / ${format(timing.tasKt, 0)} kt / ${format(timing.mach, 3)}`],
         ["Inbound / Outbound Track", `${format(timing.inboundTrackDeg, 0)}° / ${format(timing.outboundTrackDeg, 0)}°`],
