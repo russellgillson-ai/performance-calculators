@@ -1,4 +1,4 @@
-const CACHE_NAME = "performance-calculators-v13";
+const CACHE_NAME = "performance-calculators-v14";
 const APP_SHELL_ASSETS = [
   "./",
   "./index.html",
@@ -13,8 +13,7 @@ const APP_SHELL_ASSETS = [
   "./diversion_data.js",
   "./go_around_data.js",
   "./manifest.webmanifest",
-  "./icon-192.png",
-  "./icon-512.png",
+  "./icons/IMG_5358.png",
 ];
 
 self.addEventListener("message", (event) => {
